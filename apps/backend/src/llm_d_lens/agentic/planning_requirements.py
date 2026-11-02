@@ -308,7 +308,7 @@ _PATTERN = re.compile(
     rf"(?P<op>{_OP})?\s*(?P<value>-?(?:\d+(?:\.\d+)?|\.\d+))"
     r"\s*(?P<unit>(?:(?:milliseconds?|seconds?|msec|ms|secs?|s)/tokens?|"
     r"milliseconds?|seconds?|msec|ms|secs?|s|tokens?|requests?/s|qps|requests?|users?|"
-    r"\u6beb\u79d2|\u79d2|\u4e2a)(?![a-zA-Z/]))?",
+    r"\u6beb\u79d2|\u79d2|\u4e2a)(?![^\W\d_]|/))?",
     re.IGNORECASE,
 )
 _PREFERENCE_PATTERN = (
@@ -358,7 +358,7 @@ def normalize_requirements(
         value = float(match["value"])
         suffix = text[match.end() :]
         # A trailing unknown unit must not silently become milliseconds/tokens.
-        bad_unit = re.match(r"\s*([a-zA-Z/]+)", suffix) if not unit else None
+        bad_unit = re.match(r"\s*([^\W\d_]+|/)", suffix) if not unit else None
         continuation = _PATTERN.match(suffix.lstrip()) or re.match(
             _PREFERENCE_PATTERN,
             suffix.lstrip(),

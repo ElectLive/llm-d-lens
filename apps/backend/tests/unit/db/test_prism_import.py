@@ -11,6 +11,9 @@ import pytest
 from sqlalchemy import Engine, event, func, select
 from sqlalchemy.orm import sessionmaker
 
+from llm_d_lens.agentic.planner import PlanningFacts
+from llm_d_lens.agentic.planning_requirements import normalize_requirements
+from llm_d_lens.agentic.public_benchmark_record.case_retrieval import build_case_bundle
 from llm_d_lens.agentic.public_benchmark_record.contracts import normalize_statistic
 from llm_d_lens.agentic.public_benchmark_record.prism import PARSER_VERSION, PrismSnapshotImporter
 from llm_d_lens.agentic.public_benchmark_record.publication import PublicBenchmarkRecordPublicationService
@@ -244,6 +247,43 @@ def test_imported_workload_numeric_query_preserves_source(importer, snapshot, wo
             key: str(value) if isinstance(value, float) else value for key, value in workload.items()
         }
         assert importer.service.archive.read(evidence.citation.sha256) == source_bytes
+
+
+def test_imported_decimal_tp_supports_cost_preference(importer, snapshot):
+    archived = _read(snapshot, _ARCHIVE)
+    archived[0]["tp"] = 8.0
+    merged = _read(snapshot, _MERGED)
+    merged[0] = archived[0]
+    _write(snapshot, _ARCHIVE, archived)
+    _write(snapshot, _MERGED, merged)
+    importer.import_snapshot(snapshot, _REVISION, _hashes(snapshot), _approval(), expected_experiments=2)
+    service = PublicBenchmarkRecordQueryService(
+        PublicBenchmarkRecordQueryDao(importer.service.dao._get_session_factory()), importer.service.archive
+    )
+    principal = Principal(
+        user_id="reader",
+        username="reader",
+        bindings=(RoleBinding("reader"),),
+        role_permissions={"reader": frozenset({QUERY_PERMISSION})},
+    )
+    response = service.query(
+        QueryRequest(question="Reported throughput", filters=QueryFilters(record_id="historical", metric="throughput")),
+        principal,
+    )
+    assert response.status == "answered"
+    assert response.evidence[0].experiment.configuration["tp"] == "8.0"
+    result, _ = build_case_bundle(
+        tuple(
+            {"evidence_id": f"public-rag:{item.item_id}", **item.model_dump(mode="json")} for item in response.evidence
+        ),
+        PlanningFacts(8, 80, 8, requirements=normalize_requirements("prefer cost")),
+        model="example-model",
+        hardware="reported-hardware",
+        branch_status={},
+    )
+    (case,) = result.cases
+    assert case.configuration["tp"] == "8.0"
+    assert case.preference_score == pytest.approx(1 / 8)
 
 
 @pytest.mark.parametrize("legacy", [False, True])

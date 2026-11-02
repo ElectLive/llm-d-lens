@@ -16,7 +16,12 @@ from llm_d_lens.agentic.planner import (
     normalize_planning_facts,
     public_rag_context,
 )
-from llm_d_lens.agentic.planning_requirements import ModelIdentity, RuntimeIdentity, normalize_hardware
+from llm_d_lens.agentic.planning_requirements import (
+    ModelIdentity,
+    RuntimeIdentity,
+    normalize_hardware,
+    normalize_requirements,
+)
 from llm_d_lens.agentic.public_benchmark_record.case_retrieval import (
     MAX_EVIDENCE_BYTES,
     assert_case_access,
@@ -137,6 +142,47 @@ def test_unknown_workload_is_not_a_match_or_current_slo_proof():
     assert "workload.mean_input_tokens" in result.cases[0].unknown_fields
     assert result.cases[0].validation_required
     assert "SLO compliance" in result.usage
+
+
+@pytest.mark.parametrize(
+    ("configuration", "score", "invalid_field"),
+    [
+        ({"tp": "8.0"}, 1 / 8, None),
+        ({"tp": 8, "replicas": "2.0"}, 1 / 16, None),
+        ({"decode_tp": "4.0", "decode_replicas": "2.0", "tp": 8, "replicas": 4}, 1 / 8, None),
+        ({}, 1, None),
+        ({"tp": None, "replicas": None}, 1, None),
+        ({"tp": 0}, 0, "tp"),
+        ({"tp": -1}, 0, "tp"),
+        ({"tp": True}, 0, "tp"),
+        ({"tp": "unknown"}, 0, "tp"),
+        ({"tp": "NaN"}, 0, "tp"),
+        ({"tp": "Infinity"}, 0, "tp"),
+        ({"replicas": "0.0"}, 0, "replicas"),
+        ({"replicas": -1}, 0, "replicas"),
+        ({"replicas": False}, 0, "replicas"),
+        ({"decode_tp": 0, "tp": 8}, 0, "decode_tp"),
+        ({"decode_replicas": "invalid", "replicas": 2}, 0, "decode_replicas"),
+        ({"tp": "1e308", "replicas": "1e308"}, 0, "device_count"),
+        ({"tp": "1e-300", "replicas": "1e-300"}, 0, "device_count"),
+    ],
+)
+def test_cost_preference_validates_counts_without_rewriting_source(configuration, score, invalid_field, caplog):
+    entry = observation()
+    entry["experiment"]["configuration"] = configuration
+    result, _ = build_case_bundle(
+        (entry,),
+        PlanningFacts(8, 80, 8, requirements=normalize_requirements("prefer cost")),
+        model="model",
+        hardware="accelerator",
+        branch_status={},
+    )
+    (case,) = result.cases
+    assert case.preference_score == pytest.approx(score)
+    assert case.configuration == configuration
+    if invalid_field:
+        assert f"configuration.{invalid_field}" in case.unknown_fields
+        assert "reason=invalid_device_count" in caplog.text
 
 
 @pytest.mark.parametrize(

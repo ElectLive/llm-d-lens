@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from math import log
+from math import isfinite, log
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,6 +26,7 @@ from llm_d_lens.agentic.public_benchmark_record.contracts import (
     effective_statistic,
     experiment_rank_key,
     model_identities_match,
+    workload_number,
 )
 from llm_d_lens.agentic.public_benchmark_record.query_contracts import QueryEvidence, QueryFilters
 from llm_d_lens.auth.contracts import Principal
@@ -807,10 +808,28 @@ def _case(entries: list[dict[str, Any]], facts: PlanningFacts, model: str, hardw
     for preference in facts.requirements.soft_preferences if facts.requirements is not None else ():
         weight = preference.weight if preference.weight is not None else 1 / (preference.order + 1)
         if preference.preference == "cost":
-            devices = (configuration.get("decode_tp") or configuration.get("tp") or 1) * (
-                configuration.get("decode_replicas") or configuration.get("replicas") or 1
-            )
-            preference_score += weight / devices
+            counts = []
+            invalid_fields = []
+            for aliases in (("decode_tp", "tp"), ("decode_replicas", "replicas")):
+                field = next((name for name in aliases if configuration.get(name) is not None), None)
+                numeric = workload_number(configuration[field] if field else 1)
+                if numeric is None or not numeric.is_finite() or numeric <= 0 or not isfinite(float(numeric)):
+                    invalid_fields.append(f"configuration.{field}")
+                else:
+                    counts.append(float(numeric))
+            if not invalid_fields:
+                devices = counts[0] * counts[1]
+                if isfinite(devices) and devices > 0 and isfinite(weight / devices):
+                    preference_score += weight / devices
+                else:
+                    invalid_fields.append("configuration.device_count")
+            if invalid_fields:
+                unknown.extend(invalid_fields)
+                logger.warning(
+                    "event=planning_case_cost reason=invalid_device_count experiment_id=%s fields=%s",
+                    context["item_id"],
+                    ",".join(invalid_fields),
+                )
         for entry in entries:
             value = entry.get("normalized_value") or entry.get("value")
             try:

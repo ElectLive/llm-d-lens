@@ -75,6 +75,37 @@ test('historical evidence presentation distinguishes empty, successful, and fail
     ]), { sampleCount: 3, successfulCount: 2, failedCount: 1 });
 });
 
+test('latency presentation explains every target including the failing statistic', () => {
+    const targets = [
+        { target_ms: 100, statistic: 'mean', operator: '<=', observations: [
+            { value_ms: 200, statistic: 'mean', relative_deviation: 1, target_satisfied: false },
+        ] },
+        { target_ms: 300, statistic: 'p95', operator: '<', observations: [
+            { value_ms: 250, statistic: 'p95', relative_deviation: -1 / 6, target_satisfied: true },
+        ] },
+        { target_ms: 50, statistic: 'p99', operator: '>=', observations: [] },
+    ];
+    const lines = publicRagMatchSummary({
+        latency: { status: 'not_satisfied', fields: { ttft: { ...targets[1], targets } } },
+    });
+    assert.match(lines[0], /not satisfied/);
+    assert.equal(lines.length, 4);
+    assert.match(lines[1], /TTFT mean target <= 100 ms: 200 ms \(mean; deviation 100.0%\)/);
+    assert.match(lines[2], /TTFT p95 target < 300 ms: 250 ms \(p95; deviation -16.7%\)/);
+    assert.match(lines[3], /TTFT p99 target >= 50 ms: unknown/);
+});
+
+test('single latency targets retain their statistic and operator', () => {
+    const lines = publicRagMatchSummary({
+        latency: { status: 'satisfied', fields: {
+            tpot: { target_ms: 20, statistic: 'mean', operator: '=', observations: [
+                { value_ms: 20, statistic: 'mean', relative_deviation: 0 },
+            ] },
+        } },
+    });
+    assert.match(lines[1], /TPOT mean target = 20 ms: 20 ms/);
+});
+
 test('fallback references are explicitly labeled without a low-latency claim', () => {
     const ranking = { queue: 'fallback', fallback_reason: 'no_comparable_workload_or_valid_latency' };
     const lines = publicRagMatchSummary({ ranking }).join('\n');

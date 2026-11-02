@@ -73,9 +73,13 @@ export function publicRagMatchSummary(match) {
     if (match.latency) {
         lines.push(`Published latency target status: ${match.latency.status.replaceAll('_', ' ')}. Not current deployment SLO compliance.`);
         for (const [metric, field] of Object.entries(match.latency.fields || {})) {
-            lines.push(`${metric.toUpperCase()} target ${field.target_ms} ms: ${field.observations.length
-                ? field.observations.map((item) => `${item.value_ms} ms (${item.statistic || 'unspecified statistic'}; deviation ${(item.relative_deviation * 100).toFixed(1)}%)`).join('; ')
-                : 'unknown'}.`);
+            for (const target of field.targets ?? [field]) {
+                const statistic = target.statistic ? ` ${target.statistic}` : '';
+                const operator = target.operator ? `${target.operator} ` : '';
+                lines.push(`${metric.toUpperCase()}${statistic} target ${operator}${target.target_ms} ms: ${target.observations.length
+                    ? target.observations.map((item) => `${item.value_ms} ms (${item.statistic || 'unspecified statistic'}; deviation ${(item.relative_deviation * 100).toFixed(1)}%)`).join('; ')
+                    : 'unknown'}.`);
+            }
         }
     }
     if (match.configuration_basis) {

@@ -114,6 +114,11 @@ def test_default_mean_latency_does_not_accept_percentile_predictions():
         "TPOT 2 ms/tokenish",
         "TTFT 2 squirrels",
         "ISL 1024 bananas OSL 256",
+        "TTFT < 100\u00b5s",
+        "TTFT < 100\u03bcs",
+        "TTFT < 100\u5fae\u79d2",
+        "TPOT < 100\u00b5s/token",
+        "TTFT < 100 ms\u5fae\u79d2",
     ],
 )
 def test_illegal_values_and_units_are_field_errors(text):

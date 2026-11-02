@@ -665,6 +665,10 @@ Historical matching receives the serving backend from the deployment runtime
 configuration, while unverified runtime versions remain unknown.
 TPOT requirements accept per-token units such as `20 ms/token` and `0.02 s/token`;
 these normalize to milliseconds without relaxing unit validation for other metrics.
+Unsupported units, including Unicode microsecond spellings, produce requirement
+errors rather than defaulting to milliseconds. The evidence presentation shows
+every latency target with its statistic, comparison operator and observations,
+including unsatisfied targets when another statistic passes.
 
 `ConfigurationCase` retains experiment/configuration/series identity, original
 measurements, units, statistics, configuration, provenance, differences and
@@ -675,6 +679,10 @@ select metric/statistic axes, not distance from the target. Different statistics
 are not mixed; Pareto comparison requires equal available axes. Missing or
 nonpositive latency is unknown. A case with neither comparable workload nor valid
 latency is a labelled fallback reference, not low-latency evidence.
+Cost preference scoring accepts positive finite numeric TP and replica counts,
+including imported decimal strings, without rewriting the source configuration.
+Missing counts retain the single-device default; invalid explicit counts are
+logged and marked unknown, and do not receive a cost preference bonus.
 
 Import and query comparisons share numeric workload, metric and percentile
 normalization. A numeric filter such as `target_qps=1.5` matches the equivalent
