@@ -47,8 +47,9 @@ beneath it (default `~/.local/share/lens/artifacts/configurations`). The logical
 file path returned to Deploy is `/configs/<artifact-id>/<file>`.
 
 Resolve uses the in-process capability adapter in `llm_d_lens.aic` after
-normalization and before validation. The adapter uses the pinned `aiconfigurator`
-dependency and does not require a separate prediction service.
+normalization and before validation. The adapter uses the pinned `aisimulate`
+dependency through its legacy AIC-compatible Python API and does not require a
+separate prediction service.
 
 ## Evaluation configuration integrity
 
@@ -90,18 +91,21 @@ an unrelated mutable local checkout. Filesystem offload remains unsupported.
 
 LMCache option reference: [CPU RAM configuration](https://docs.lmcache.ai/kv_cache/storage_backends/cpu_ram.html).
 
-## Maintaining AIConfigurator
+## Maintaining AISimulate
 
-The runtime SDK is pinned in `pyproject.toml` (currently `aiconfigurator==0.12.0`).
-Its matching core package contains the support matrix and performance data.
-Dependabot checks for AIC updates weekly and proposes a reviewable PR; it does
-not automatically upgrade a running environment or merge the PR.
+The runtime SDK is pinned in `pyproject.toml` (currently
+`aisimulate==0.13.0`). AISimulate includes its performance model and data.
+Lens keeps its existing AIC HTTP contracts while calling AISimulate's
+`legacy_cli` API for support, candidate search and exact-topology estimates.
+Dependabot checks for AISimulate updates weekly and proposes a reviewable PR;
+it does not automatically upgrade a running environment or merge the PR.
 
 For an upgrade:
 
-1. Review the [official releases](https://github.com/ai-dynamo/aiconfigurator/releases)
-   and the target release's support matrix. Keep an exact released version in
-   `pyproject.toml`; a passing matrix on `main` may not exist in a published wheel.
+1. Review the [official releases](https://github.com/ai-dynamo/aisimulate/releases)
+   and the target release's compatibility and support data. Keep an exact
+   released version in `pyproject.toml`; a passing matrix on `main` may not
+   exist in a published wheel.
 2. Install from the repository root with
    `.venv/bin/python -m pip install -e '.[embedded-db,ldap]'`.
 3. Run `.venv/bin/python -m pip check` and
@@ -110,7 +114,7 @@ For an upgrade:
    system, backend, GPU budget and workload. A support flag is not a deployment
    test and does not guarantee candidates for every budget or latency target.
 5. Restart with `hack/lens-local.sh restart` and verify the running service. Record
-   the installed SDK/core versions and search outcome in the upgrade PR.
+   the installed AISimulate version and search outcome in the upgrade PR.
 
 Example smoke check (requires access to the model configuration, or a cached copy):
 
@@ -119,7 +123,7 @@ from importlib.metadata import version
 from llm_d_lens.aic.models import AICRequest
 from llm_d_lens.aic.service import check_support_sync, search_sync
 
-print({name: version(name) for name in ("aiconfigurator", "aiconfigurator-core")})
+print({"aisimulate": version("aisimulate")})
 request = AICRequest(
     model_name="Qwen/Qwen3-0.6B",
     aic_system_name="b60",
@@ -133,4 +137,5 @@ assert any(item["mode"] == "disagg" for item in search_sync(request).configs)
 ```
 
 If validation fails, restore the prior dependency pin, reinstall with the same
-command and restart. Do not edit the installed support CSV to force acceptance.
+command and restart. Do not edit AISimulate's installed support data to force
+acceptance.

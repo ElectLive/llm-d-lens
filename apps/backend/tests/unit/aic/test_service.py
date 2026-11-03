@@ -1,4 +1,4 @@
-"""Tests for the AIC estimate adapter."""
+"""Tests for the AISimulate estimate adapter."""
 
 from types import SimpleNamespace
 
@@ -15,7 +15,7 @@ def estimate_request(**kwargs):
 @pytest.mark.parametrize("target", ["target_concurrency", "target_request_rate"])
 def test_search_routes_load_target_to_recommend_and_scales_replicas(monkeypatch, target):
     import pandas as pd
-    from aiconfigurator.cli import api
+    from aisimulate.legacy_cli import api
 
     captured = {}
 
@@ -57,7 +57,7 @@ def test_search_rejects_joint_load_targets():
 def test_search_defaults_match_native_search_and_recommend():
     from inspect import signature
 
-    from aiconfigurator.cli.api import cli_default, cli_recommend
+    from aisimulate.legacy_cli.api import cli_default, cli_recommend
 
     request = service.AICRequest(model_name="Qwen/Qwen3-8B", aic_system_name="test-system")
     for operation in (cli_default, cli_recommend):
@@ -100,7 +100,7 @@ def test_search_scales_both_pd_worker_pools():
 
 def test_search_rejects_closest_recommendation_that_exceeds_slo(monkeypatch):
     import pandas as pd
-    from aiconfigurator.cli import api
+    from aisimulate.legacy_cli import api
 
     monkeypatch.setattr(service, "_cli", lambda: (None, None, None))
     monkeypatch.setattr(
@@ -124,7 +124,7 @@ def test_search_rejects_closest_recommendation_that_exceeds_slo(monkeypatch):
 
 def test_search_rejects_recommendation_above_capacity(monkeypatch):
     import pandas as pd
-    from aiconfigurator.cli import api
+    from aisimulate.legacy_cli import api
 
     monkeypatch.setattr(service, "_cli", lambda: (None, None, None))
     monkeypatch.setattr(
@@ -318,7 +318,7 @@ def test_estimate_accepts_matching_disaggregated_topology(monkeypatch):
 
 
 def test_estimate_without_targets_uses_direct_aggregated_prediction(monkeypatch):
-    from aiconfigurator.cli import api
+    from aisimulate.legacy_cli import api
 
     captured = {}
 
@@ -357,7 +357,7 @@ def test_estimate_without_targets_uses_direct_aggregated_prediction(monkeypatch)
 
 
 def test_estimate_without_targets_rejects_mismatched_direct_topology(monkeypatch):
-    from aiconfigurator.cli import api
+    from aisimulate.legacy_cli import api
 
     monkeypatch.setattr(
         api,
@@ -383,7 +383,7 @@ def test_estimate_without_targets_rejects_mismatched_direct_topology(monkeypatch
 
 
 def test_estimate_without_targets_accepts_matching_direct_disaggregation(monkeypatch):
-    from aiconfigurator.cli import api
+    from aisimulate.legacy_cli import api
 
     captured = {}
 
@@ -427,7 +427,7 @@ def test_estimate_without_targets_accepts_matching_direct_disaggregation(monkeyp
 
 
 def test_estimate_without_targets_does_not_infer_multi_replica_throughput(monkeypatch):
-    from aiconfigurator.cli import api
+    from aisimulate.legacy_cli import api
 
     monkeypatch.setattr(
         api,

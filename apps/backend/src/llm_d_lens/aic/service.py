@@ -6,7 +6,7 @@
 #
 #     https://www.apache.org/licenses/LICENSE-2.0
 
-"""In-process adapter around the pip-installed AIConfigurator SDK."""
+"""In-process adapter around AISimulate's AIC-compatible Python API."""
 
 from __future__ import annotations
 
@@ -27,15 +27,15 @@ from .models import (
 
 
 class AICError(RuntimeError):
-    """A user-visible AIConfigurator integration failure."""
+    """A user-visible AISimulate integration failure."""
 
 
 def _cli():
     try:
-        from aiconfigurator.cli import cli_default, cli_exp, cli_support
+        from aisimulate.legacy_cli import cli_default, cli_exp, cli_support
     except ImportError as error:
         raise AICError(
-            "AIConfigurator is unavailable; install the project dependencies with python -m pip install -e ."
+            "AISimulate is unavailable; install the project dependencies with python -m pip install -e ."
         ) from error
     return cli_default, cli_exp, cli_support
 
@@ -61,7 +61,7 @@ def _support_flags(result: Any) -> tuple[bool, bool]:
         return bool(agg), bool(disagg)
     if isinstance(result, tuple) and len(result) >= 2:
         return bool(result[0]), bool(result[1])
-    raise AICError("AIConfigurator returned an unsupported capability result")
+    raise AICError("AISimulate returned an unsupported capability result")
 
 
 def check_support_sync(request: AICRequest) -> AICSupportResponse:
@@ -151,7 +151,7 @@ def search_sync(request: AICRequest) -> AICSearchResponse:
         kwargs["tpot"] = request.tpot_target_ms
     try:
         if request.target_concurrency is not None or request.target_request_rate is not None:
-            from aiconfigurator.cli.api import cli_recommend
+            from aisimulate.legacy_cli.api import cli_recommend
 
             kwargs.pop("total_gpus")
             kwargs["target_concurrency"] = request.target_concurrency
@@ -162,7 +162,7 @@ def search_sync(request: AICRequest) -> AICSearchResponse:
             if not fitting:
                 required = min((item["num_total_gpus"] for item in configs), default=None)
                 raise AICError(
-                    f"AIC cannot serve the requested load within the selected {request.gpu_count}-GPU budget. "
+                    f"AISimulate cannot serve the requested load within the selected {request.gpu_count}-GPU budget. "
                     f"Minimum recommended GPUs: {required if required is not None else 'unavailable'}. "
                     "Reduce the load target, select more accelerator capacity, or relax the latency SLOs."
                 )
@@ -176,7 +176,7 @@ def search_sync(request: AICRequest) -> AICSearchResponse:
             ]
             if not compliant:
                 raise AICError(
-                    "AIC found no configuration meeting the TTFT/TPOT SLOs at the requested load. "
+                    "AISimulate found no configuration meeting the TTFT/TPOT SLOs at the requested load. "
                     "Reduce the load target, relax the latency SLOs, or select more compatible accelerator capacity."
                 )
             return AICSearchResponse(configs=compliant, chosen_mode=result.chosen_exp)
@@ -198,7 +198,7 @@ def experiments_sync(request: AICExperimentRequest) -> AICExperimentResponse:
     try:
         parsed = yaml.safe_load(request.yaml_text)
         if not isinstance(parsed, dict):
-            raise AICError("AIConfigurator experiment YAML must contain an object")
+            raise AICError("AISimulate experiment YAML must contain an object")
         result = cli_exp(config=parsed, top_n=request.top_n)
     except AICError:
         raise
@@ -231,7 +231,7 @@ def estimate_sync(payload: AICEstimateRequest) -> dict[str, Any]:
         raise AICError(f"Requested topology requires {required_gpus} GPUs, not {payload.gpu_count}")
     if payload.ttft_target_ms is None and payload.tpot_target_ms is None:
         try:
-            from aiconfigurator.cli.api import cli_estimate
+            from aisimulate.legacy_cli.api import cli_estimate
 
             kwargs: dict[str, Any] = {
                 "model_path": payload.model_name,
@@ -270,7 +270,7 @@ def estimate_sync(payload: AICEstimateRequest) -> dict[str, Any]:
                     and raw.get("num_total_gpus") == required_gpus
                 )
             if not topology_matches or not result.ttft or not result.tpot:
-                raise AICError("AIConfigurator returned no estimate matching the requested topology")
+                raise AICError("AISimulate returned no estimate matching the requested topology")
             prediction = {
                 "mode": "agg" if is_agg else "disagg",
                 "num_total_gpus": required_gpus,
@@ -342,7 +342,7 @@ def estimate_sync(payload: AICEstimateRequest) -> dict[str, Any]:
             )
         ):
             return result
-    raise AICError("AIConfigurator returned no estimate matching the requested topology")
+    raise AICError("AISimulate returned no estimate matching the requested topology")
 
 
 async def estimate(payload: AICEstimateRequest) -> dict[str, Any]:

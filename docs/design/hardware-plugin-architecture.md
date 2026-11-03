@@ -96,7 +96,7 @@ Organized by runtime layer, with actual locations and hardcoded values forming t
 
 | Location | XPU-specific details |
 |---|---|
-| `llm_d_lens/configuration/capability.py:22-27` | AIC `system_name`, `accelerator_count`, backend resolution; call AIConfigurator `check_support` |
+| `llm_d_lens/configuration/capability.py:22-27` | AISimulate `system_name`, `accelerator_count`, backend resolution; call the compatibility `check_support` adapter |
 | `llm_d_lens/configuration/validators.py:28-60` | Validate topology accelerator counts against hardware budgets (generic names, hardcoded hardware source) |
 | `llm_d_lens/configuration/guide_settings.py:67-69` | special case `deviceClassName == "dranet-rdma"` |
 | `server/candidateSearch.ts:46-62` | `acceleratorForSystem()`: `/bmg\|max_\|xpu\|b60\|pvc/i ? 'xpu' : 'cuda'` — Guess hardware from AIC system-name regex |

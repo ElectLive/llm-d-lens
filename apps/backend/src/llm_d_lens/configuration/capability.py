@@ -6,7 +6,7 @@
 #
 #     https://www.apache.org/licenses/LICENSE-2.0
 
-"""AIConfigurator capability check used internally by resolve."""
+"""AISimulate capability check used internally by resolve."""
 
 from typing import Any
 
@@ -36,7 +36,7 @@ async def check_capability(candidate: CandidateConfig) -> tuple[bool, str | None
             )
         )
     except (AICError, ValueError) as error:
-        return False, f"AIConfigurator capability check failed: {error}", []
+        return False, f"AISimulate capability check failed: {error}", []
 
     if not result.supported:
         reason = result.reason or f"{model} is not supported on {system_name}"
@@ -50,5 +50,5 @@ async def check_capability(candidate: CandidateConfig) -> tuple[bool, str | None
     if mode_supported is False:
         return False, f"{candidate.type} topology is not supported for {model} on {system_name}", []
     constraints = result.constraints
-    warnings = [f"AIConfigurator constraints: {constraints}"] if constraints else []
+    warnings = [f"AISimulate constraints: {constraints}"] if constraints else []
     return True, None, warnings
