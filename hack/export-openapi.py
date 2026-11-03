@@ -3,7 +3,7 @@
 
 Run with the backend virtualenv active (``source .venv/bin/activate``):
 
-    python scripts/export-openapi.py
+    python hack/export-openapi.py
 
 The generated file (``docs/fern/apis/python/openapi.json``) is committed so the
 docs site can be previewed and checked without the Python backend installed.

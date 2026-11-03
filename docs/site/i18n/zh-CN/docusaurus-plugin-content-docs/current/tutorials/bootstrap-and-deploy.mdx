@@ -11,10 +11,9 @@ description: 连接集群、下载模型权重并启动 llm-d 部署。
 1. 打开 **Clusters → Add（集群 → 新增）**。
 2. 填写集群名称，选择 **I already have a kubeconfig** 并上传文件。
 3. 依次完成 **Network Proxy**、**Model gateway**、**Accelerator** 和 **llm-d stack**。网关保持 **Istio**，加速器选择集群实际使用的类型。
-4. 在 **Model Cache** 中填写令牌设置，勾选 **Create a storage volume for model-cache on this cluster**。
-5. 选择 **hostPath** 或 **NFS**，填写路径、容量等必填项。
-6. 点击 **Review → Finish**，等待完成后点击 **Done**。
-7. 选择新集群，检查工作节点和 **Deployable GPU（可部署 GPU）**。
+4. 在 **Model Cache** 中填写令牌设置。存储卷为必填项：选择 **hostPath** 或 **NFS**，填写路径和容量。
+5. 点击 **Review → Finish**，等待完成后点击 **Done**。
+6. 选择新集群，检查工作节点和 **Deployable GPU（可部署 GPU）**。
 
 还没有 Kubernetes 集群时，先按[通过 Kubespray 创建集群](/user-guide/clusters)操作，再完成同一向导。
 存储字段填写方法见[存储](/user-guide/storage)。

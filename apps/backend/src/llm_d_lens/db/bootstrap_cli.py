@@ -58,7 +58,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default="",
         help=(
             "password to enforce on the embedded PostgreSQL superuser (only used with --mode embedded); "
-            "omit for a password-less embedded database, e.g. scripts/lens-local.sh's local-dev use"
+            "omit for a password-less embedded database, e.g. hack/lens-local.sh's local-dev use"
         ),
     )
     parser.add_argument(

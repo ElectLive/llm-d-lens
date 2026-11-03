@@ -28,6 +28,29 @@ def asset(name: str, content: str) -> dict:
     return {"name": name, "content": content, "checksum": text_checksum(content)}
 
 
+def _needs_render_service(values: dict) -> bool:
+    """Whether the Router config renders tokens in a separate Service.
+
+    llm-d v1.0 moved vLLM tokenization onto the model-server pods through
+    ``vllm.endpointDiscovery``; SGLang still points ``vllm.url`` at the
+    dedicated render pool.
+    """
+    epp = (values.get("router") or {}).get("epp") or {}
+    key = epp.get("pluginsConfigFile")
+    custom = epp.get("pluginsCustomConfig") or {}
+    try:
+        document = yaml.safe_load(custom[key])
+    except (KeyError, TypeError, yaml.YAMLError):
+        return True
+    if not isinstance(document, dict):
+        return True
+    token = next((item for item in document.get("plugins") or [] if item.get("type") == "token-producer"), None)
+    if not isinstance(token, dict):
+        return True
+    vllm = (token.get("parameters") or {}).get("vllm") or {}
+    return "endpointDiscovery" not in vllm
+
+
 async def build_guide_deployment_bundle(
     guide: str, manifest: dict, model: str, accelerator: str, block_size=None, router_values=""
 ) -> dict:
@@ -100,13 +123,29 @@ async def build_guide_deployment_bundle(
     }
     if guide == "precise-prefix-cache-routing":
         relative = "guides/precise-prefix-cache-routing/render"
-        render_path = (
-            str(Path(local_root) / relative)
-            if local_root
-            else f"https://github.com/{source['repository']}//{relative}?ref={source['commit']}"
-        )
+        variant = "xpu-sglang" if "xpu" in accelerator.lower() else "standalone"
+
+        async def render_overlay(path: str) -> str:
+            return await command_output(["kubectl", "kustomize", path], 60)
+
+        async def render_asset() -> str:
+            if not _needs_render_service(values):
+                return ""
+            if local_root:
+                directory = Path(local_root) / relative
+                selected = relative if (directory / "kustomization.yaml").is_file() else f"{relative}/{variant}"
+                return await render_overlay(str(Path(local_root) / selected))
+            rendered = await render_overlay(
+                f"https://github.com/{source['repository']}//{relative}?ref={source['commit']}"
+            )
+            if rendered.strip():
+                return rendered
+            return await render_overlay(
+                f"https://github.com/{source['repository']}//{relative}/{variant}?ref={source['commit']}"
+            )
+
         rendered, script, job = await asyncio.gather(
-            command_output(["kubectl", "kustomize", render_path], 60),
+            render_asset(),
             read_source("guides/recipes/router/calibration/calibrate.sh"),
             read_source("guides/recipes/router/calibration/calibration-peak-throughput.yaml"),
         )
@@ -118,9 +157,9 @@ async def build_guide_deployment_bundle(
         baseline["metadata"]["name"] = overlay.get("namePrefix", "") + baseline["metadata"]["name"]
         for labels in overlay.get("labels", []):
             baseline["metadata"].setdefault("labels", {}).update(labels.get("pairs", {}))
-        bundle["resources"] = [
-            asset("render.yaml", rendered),
-            asset("baseline.yaml", yaml.safe_dump(baseline, sort_keys=False)),
-        ]
+        resources = [asset("baseline.yaml", yaml.safe_dump(baseline, sort_keys=False))]
+        if rendered.strip():
+            resources.insert(0, asset("render.yaml", rendered))
+        bundle["resources"] = resources
         bundle["calibration"] = [asset("calibrate.sh", script), asset("calibration-peak-throughput.yaml", job)]
     return validate_deployment_bundle(bundle, guide, source["commit"])

@@ -77,6 +77,18 @@ export function applyClusterCrds(clusterId) {
     });
 }
 
+export function loadClusterLws(clusterId) {
+    return clusterRequest(`/api/cluster/clusters/${encodeURIComponent(clusterId)}/lws`);
+}
+
+export function installClusterLws(clusterId) {
+    return clusterRequest(`/api/cluster/clusters/${encodeURIComponent(clusterId)}/lws`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+    });
+}
+
 export function startClusterImagePrepull(clusterId, accelerators) {
     return clusterRequest(`/api/cluster/clusters/${encodeURIComponent(clusterId)}/images/prepull`, {
         method: 'POST',

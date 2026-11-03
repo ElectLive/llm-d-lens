@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 test('compatibility launcher validates the Python catalog without generating a Node server artifact', () => {
-    const result = spawnSync(process.execPath, ['scripts/generate-mcp-tools.mjs', '--check', '--json'], {
+    const result = spawnSync(process.execPath, ['hack/generate-mcp-tools.mjs', '--check', '--json'], {
         cwd: new URL('../', import.meta.url),
         encoding: 'utf8',
         maxBuffer: 16 * 1024 * 1024,
@@ -20,7 +20,7 @@ test('compatibility launcher validates the Python catalog without generating a N
 });
 
 test('compatibility launcher rejects unsupported arguments', () => {
-    const result = spawnSync(process.execPath, ['scripts/generate-mcp-tools.mjs', '--unsupported'], {
+    const result = spawnSync(process.execPath, ['hack/generate-mcp-tools.mjs', '--unsupported'], {
         cwd: new URL('../', import.meta.url),
         encoding: 'utf8',
     });

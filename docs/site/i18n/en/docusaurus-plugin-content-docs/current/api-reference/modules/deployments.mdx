@@ -1135,6 +1135,52 @@ if context is not None:
   </TabItem>
 </Tabs>
 
+### Scale a deployment execution
+
+Change the live Prefill and/or Decode model-server replica counts for a ready or failed execution. This changes Kubernetes replicas only; the saved configuration is unchanged. Deployment and DisaggregatedSet workloads are supported. DisaggregatedSet scaling changes role replicas and never changes `spec.slices`; new Lens-created sets use `slices: 1`.
+
+<Tabs>
+  <TabItem value="rest-api" label="REST API">
+    **`POST /api/v1/deployments/executions/{execution_id}/scale`**
+
+    Request:
+
+    ```json
+    {
+      "prefill_replicas": 1,
+      "decode_replicas": 2
+    }
+    ```
+
+    - Path parameter: `execution_id` (`string`, required)
+    - Body fields: `prefill_replicas` and `decode_replicas` (`integer`, optional, `1..100`); at least one is required.
+    - Only supplied roles are changed. P/D deployments use both fields; aggregated deployments use `decode_replicas`.
+    - `409` when the execution is not ready or failed; `422` when the workload is unsupported or a role does not exist; `502` when a scale operation only partially succeeds.
+
+    Success: HTTP `200` with the updated execution payload. `scale` contains `prefillReplicas`, `decodeReplicas`, and `manual`.
+  </TabItem>
+  <TabItem value="python-api" label="Python API">
+
+```python
+import asyncio
+
+from llm_d_lens.deploy.contracts import DeploymentScaleRequest
+from llm_d_lens.deploy.executions import scale_deployment_execution
+
+
+async def main() -> None:
+    context = await scale_deployment_execution(
+        "execution-ready",
+        DeploymentScaleRequest(decode_replicas=2),
+    )
+    print(context.scale)
+
+
+asyncio.run(main())
+```
+  </TabItem>
+</Tabs>
+
 ### Get execution pod status
 
 Get live pod status for all pods in a deployment execution's namespace.

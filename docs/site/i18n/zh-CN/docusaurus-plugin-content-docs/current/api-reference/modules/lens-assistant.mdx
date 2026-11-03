@@ -174,7 +174,7 @@ Python 路由不保留传输会话，因此拒绝终止会话的请求。使用 
   </TabItem>
 </Tabs>
 
-`llm_d_lens.mcp.catalog` 根据 FastAPI OpenAPI schema 生成工具，并与 `llm_d_lens/mcp/definitions.json` 中的 25 个特殊工具定义合并。`node scripts/generate-mcp-tools.mjs --check` 校验该目录，不再生成 Node 文件。`llm_d_lens.mcp.tools` 通过进程内 ASGI 客户端调用规范 REST 路由，保留认证、CSRF 和资源范围检查。
+`llm_d_lens.mcp.catalog` 根据 FastAPI OpenAPI schema 生成工具，并与 `llm_d_lens/mcp/definitions.json` 中的 25 个特殊工具定义合并。`node hack/generate-mcp-tools.mjs --check` 校验该目录，不再生成 Node 文件。`llm_d_lens.mcp.tools` 通过进程内 ASGI 客户端调用规范 REST 路由，保留认证、CSRF 和资源范围检查。
 
 ## MCP 工具调用的内容 {/* #what-the-mcp-tools-call */}
 

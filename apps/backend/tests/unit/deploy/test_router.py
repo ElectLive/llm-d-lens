@@ -779,6 +779,7 @@ async def test_list_ready_executions_is_side_effect_free_and_filtered(monkeypatc
         "custom_parameters": [],
         "baseline_endpoint": None,
         "service_ref": None,
+        "scale": None,
     }
 
 

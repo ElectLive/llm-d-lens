@@ -19,7 +19,7 @@ flowchart LR
 
 Deploy 属于 Lens Python 后端，并非独立的 llm-d-bench API。
 部署路由在同一进程内执行，不再需要单独的 BFF 上游。
-本地开发使用 `scripts/lens-local.sh start`；当前启动与存储设置参见
+本地开发使用 `hack/lens-local.sh start`；当前启动与存储设置参见
 [安装](/installation)和[环境变量](/environment-variables)，不要沿用主机专属的 `/root/...` 路径。
 请求需要已认证的 Lens 会话及相应权限；非安全方法还需要匹配的 `prism_csrf` Cookie
 和 `x-prism-csrf` 请求头。未登录的冒烟请求可能返回 `401`，而不是资源列表。

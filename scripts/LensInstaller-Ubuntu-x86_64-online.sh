@@ -157,7 +157,7 @@ with tarfile.open(archive, "r:gz") as source:
                 or not (member.isdir() or member.isfile())):
             sys.exit(f"Unsafe or unsupported source archive entry: {member.name}")
         seen.add(str(path))
-    required = ("package.json", "apps/backend/pyproject.toml", "scripts/storage-env.sh",
+    required = ("package.json", "apps/backend/pyproject.toml", "hack/storage-env.sh",
                 "scripts/LensInstaller-Ubuntu-x86_64-online.sh")
     for name in required:
         if not any(m.name == f"{root}/{name}" and m.isfile() for m in members):
@@ -347,7 +347,7 @@ DB_USER="${DB_USER:-}"
 DB_PASSWORD="${DB_PASSWORD:-}"
 # Password enforced on the built-in embedded PostgreSQL's superuser (only
 # used when DB_MODE=embedded; see llm_d_lens/db/settings.py's
-# _harden_embedded_postgres_password). Unlike scripts/lens-local.sh's local-dev
+# _harden_embedded_postgres_password). Unlike hack/lens-local.sh's local-dev
 # embedded database (intentionally password-less), the installer always
 # requires one -- prompted interactively, or auto-generated for silent
 # installs if not supplied via --db-embedded-password.
@@ -697,7 +697,7 @@ ensure_system_packages() {
     ok "system packages installed"
 }
 
-# ---- Node.js toolchain (adapted from scripts/lens-local.sh) ------------------------------
+# ---- Node.js toolchain (adapted from hack/lens-local.sh) ------------------------------
 TOOLS_DIR="$INSTALL_DIR/.tools"
 LOCAL_NODE_DIR="$TOOLS_DIR/node"
 
@@ -961,7 +961,7 @@ setup_tls() {
         return 0
     fi
     local cert_env
-    if ! cert_env="$("$INSTALL_DIR/scripts/generate-self-signed-cert.sh" "$host" "$INSTALL_DIR/certs")"; then
+    if ! cert_env="$("$INSTALL_DIR/hack/generate-self-signed-cert.sh" "$host" "$INSTALL_DIR/certs")"; then
         warn "failed to generate a self-signed TLS certificate — falling back to plain HTTP."
         ENABLE_HTTPS=0
         return 0
@@ -1005,7 +1005,7 @@ TLS_CERT_FILE="${TLS_CERT_FILE:-}"
 TLS_KEY_FILE="${TLS_KEY_FILE:-}"
 DB_MODE="${DB_MODE:-embedded}"
 PID_DIR="$ROOT_DIR/.prism-pids"
-source "$ROOT_DIR/scripts/storage-env.sh"
+source "$ROOT_DIR/hack/storage-env.sh"
 LOG_DIR="$LENS_LOG_DIR/service"
 EVALUATE_STORE="$LENS_DATA_DIR/metadata/evaluations"
 
@@ -1108,7 +1108,7 @@ ensure_tls() {
         return 0
     fi
     local cert_env
-    if ! cert_env="$("$ROOT_DIR/scripts/generate-self-signed-cert.sh" "$host" "$ROOT_DIR/certs")"; then
+    if ! cert_env="$("$ROOT_DIR/hack/generate-self-signed-cert.sh" "$host" "$ROOT_DIR/certs")"; then
         warn "failed to generate a self-signed TLS certificate — running plain HTTP."
         ENABLE_HTTPS=0
         return 0
@@ -1139,7 +1139,7 @@ wait_for_http() {
 }
 
 # Points operators to the protected first-run credential file without
-# printing its contents (mirrors scripts/lens-local.sh's print_initial_admin_credentials).
+# printing its contents (mirrors hack/lens-local.sh's print_initial_admin_credentials).
 # The file is removed once the password is changed.
 print_initial_admin_credentials() {
     local cred_file="$LENS_DATA_DIR/credentials/initial_admin.txt"
@@ -1171,7 +1171,7 @@ cmd_start() {
         PRISM_MCP_URL="$scheme://127.0.0.1:$APP_PORT/api/mcp" \
         PRISM_MCP_CA_FILE="${TLS_CERT_FILE:-}" \
         TLS_CERT_FILE="$TLS_CERT_FILE" TLS_KEY_FILE="$TLS_KEY_FILE" \
-        bash scripts/run-backend.sh
+        bash hack/run-backend.sh
     log "waiting for services to become ready..."
     wait_for_http app     "$scheme://127.0.0.1:$APP_PORT/api/health"
     wait_for_http app     "$scheme://127.0.0.1:$APP_PORT/api/config"
@@ -1457,7 +1457,7 @@ if [[ "$PIPE_ENTRY" == 1 || "${BASH_SOURCE[0]}" == "$0" ]]; then
         --install-source)
             shift
             [[ "$PIPE_ENTRY" == 0 && -f "$SOURCE_DIR/package.json" && -f "$SOURCE_DIR/apps/backend/pyproject.toml" &&
-                -f "$SOURCE_DIR/scripts/storage-env.sh" ]] ||
+                -f "$SOURCE_DIR/hack/storage-env.sh" ]] ||
                 online_fail "Internal source installation requires a complete downloaded Lens tree."
             parse_args "$@"
             FRESH_INSTALL=1

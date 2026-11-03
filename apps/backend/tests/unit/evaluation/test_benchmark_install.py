@@ -211,3 +211,42 @@ async def test_prepare_runtime_repairs_host_and_harness_for_existing_checkout(mo
     assert (cli, root) == (str(tmp_path / ".venv/bin/llmdbenchmark"), tmp_path)
     assert configuration.read_text(encoding="utf-8").count("self.no_proxy = None") == 1
     assert router._harness_kubernetes_no_proxy_command() in template.read_text(encoding="utf-8")
+
+
+def test_benchmark_python_floor_reads_requires_python(tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[project]\nrequires-python = ">=3.14"\n', encoding="utf-8")
+    assert router._benchmark_python_floor(tmp_path) == (3, 14)
+
+
+def test_benchmark_interpreter_uses_uv_when_required_python_is_missing(monkeypatch, tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[project]\nrequires-python = ">=3.14"\n', encoding="utf-8")
+    monkeypatch.delenv("LENS_BENCHMARK_PYTHON", raising=False)
+    monkeypatch.setattr(router.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(router, "_python_version", lambda executable: (3, 12))
+    assert router._benchmark_interpreter(tmp_path) == (None, "/usr/bin/uv")
+
+
+def test_benchmark_ready_rebuilds_an_older_python_venv(monkeypatch, tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[project]\nrequires-python = ">=3.14"\n', encoding="utf-8")
+    script = tmp_path / ".venv" / "bin" / "llmdbenchmark"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(router, "_python_version", lambda executable: (3, 12))
+    assert router._benchmark_ready(tmp_path) is False
+
+
+def test_uv_install_uses_the_required_python(monkeypatch, tmp_path):
+    root = tmp_path / "benchmark"
+    root.mkdir()
+    (root / "pyproject.toml").write_text('[project]\nrequires-python = ">=3.14"\n', encoding="utf-8")
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(router, "_benchmark_interpreter", lambda _root: (None, "/usr/bin/uv"))
+    monkeypatch.setattr(router.subprocess, "run", run)
+    router._install_benchmark_checkout(root)
+    assert commands[0][:5] == ["/usr/bin/uv", "venv", "--python", "3.14", str(root / ".venv")]
+    assert commands[1][:5] == ["/usr/bin/uv", "pip", "install", "--python", str(root / ".venv/bin/python")]

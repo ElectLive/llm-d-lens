@@ -21,15 +21,15 @@
 # require a secure context.
 #
 # Idempotent: if a cert already exists for the requested host, it's reused
-# as-is (so scripts/lens-local.sh and the installer can call this on every start
+# as-is (so hack/lens-local.sh and the installer can call this on every start
 # without regenerating/rotating certs each time). Pass --force to regenerate.
 #
 # Usage:
-#   ./scripts/generate-self-signed-cert.sh [host_or_ip] [output_dir] [--force]
+#   ./hack/generate-self-signed-cert.sh [host_or_ip] [output_dir] [--force]
 #
 # Examples:
-#   ./scripts/generate-self-signed-cert.sh 10.0.5.23
-#   ./scripts/generate-self-signed-cert.sh prism.internal.example.com ./certs
+#   ./hack/generate-self-signed-cert.sh 10.0.5.23
+#   ./hack/generate-self-signed-cert.sh prism.internal.example.com ./certs
 #
 # On success, prints two lines to stdout (and nothing else) so callers can
 # eval them directly:

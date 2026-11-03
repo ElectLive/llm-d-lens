@@ -26,6 +26,19 @@ test('env.sh parsing reads the pinned defaults', () => {
     });
 });
 
+test('env.sh parsing reads direct assignments', () => {
+    const parsed = parseEnvSh([
+        'export ROUTER_CHART_VERSION=v1.0.0',
+        'export GATEWAY_API_VERSION=v1.6.2',
+        'export GAIE_VERSION="v1.6.2"',
+    ].join('\n'));
+    assert.deepEqual(parsed, {
+        ROUTER_CHART_VERSION: 'v1.0.0',
+        GATEWAY_API_VERSION: 'v1.6.2',
+        GAIE_VERSION: 'v1.6.2',
+    });
+});
+
 test('offline checks pass for the shipped profile and skip the network', async () => {
     const log = [];
     const { failures } = await runChecks(loadProfile(), { offline: true, log: (line) => log.push(line) });

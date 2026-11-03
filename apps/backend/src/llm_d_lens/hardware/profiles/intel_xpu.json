@@ -103,7 +103,7 @@
     "node_selector": { "intel.feature.node.kubernetes.io/gpu": "true" },
     "resource_name": null,
     "supports_pci_allowlist": true,
-    "runtime_image": "ghcr.io/llm-d/llm-d-xpu:v0.10.0",
+    "runtime_image": "ghcr.io/llm-d/llm-d-xpu:v1.0.0",
     "managed_image_repositories": ["ghcr.io/llm-d/llm-d-xpu", "docker.io/vllm/vllm-openai-xpu"],
     "runtime_class_matchers": ["intel"],
     "pci_attribute": "pciAddress",

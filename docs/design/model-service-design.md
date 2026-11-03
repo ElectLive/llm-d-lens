@@ -1079,7 +1079,7 @@ One Gateway per cluster; **one HTTPRoute per model service**, whose
 - **Variable:** `LENS_IPP_CHART`; **Default:**
   `oci://ghcr.io/llm-d/charts/payload-processor`; **Description:** IPP Helm
   chart path or OCI reference
-- **Variable:** `LENS_IPP_VERSION`; **Default:** `v0.1.0`; **Description:** IPP
+- **Variable:** `LENS_IPP_VERSION`; **Default:** `v1.0.0`; **Description:** IPP
   chart version; also configurable through cluster `ipp_version`
 - **Variable:** `LENS_MODEL_RECONCILE_INTERVAL_SECONDS`; **Default:** `300`;
   **Description:** Background shared-Gateway/model-route reconciliation

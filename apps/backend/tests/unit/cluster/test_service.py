@@ -33,6 +33,38 @@ def test_gateway_namespace_is_stable_unique_and_visible_on_cluster_records():
 
 
 @pytest.mark.asyncio
+async def test_lws_status_reports_crd_and_controller(monkeypatch):
+    commands = []
+
+    async def fake_run_kubectl(argv, **kwargs):
+        commands.append(argv)
+        stdout = '{"status": {"availableReplicas": 1}}' if "deployment" in argv else "ok"
+        return CommandResult(argv=tuple(argv), returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(service, "run_kubectl", fake_run_kubectl)
+    status = await service.lws_status("cluster-a")
+
+    assert status["ready"] is True
+    assert status["crd"] == "ready"
+    assert status["controller"] == "ready"
+    assert status["version"] == service.lws_version()
+    assert commands[0][:3] == ["get", "crd", "disaggregatedsets.disaggregatedset.x-k8s.io"]
+
+
+@pytest.mark.asyncio
+async def test_lws_status_reports_missing_crd(monkeypatch):
+    async def fake_run_kubectl(argv, **kwargs):
+        return CommandResult(argv=tuple(argv), returncode=1, stdout="", stderr="not found")
+
+    monkeypatch.setattr(service, "run_kubectl", fake_run_kubectl)
+    status = await service.lws_status("cluster-a")
+
+    assert status["ready"] is False
+    assert status["crd"] == "missing"
+    assert status["controller"] == "missing"
+
+
+@pytest.mark.asyncio
 async def test_delete_cluster_rejects_when_storage_volumes_registered(monkeypatch):
     """A cluster must not be deletable while it still has Storage volumes
     registered against it -- reproduced live: deleting a cluster first, then

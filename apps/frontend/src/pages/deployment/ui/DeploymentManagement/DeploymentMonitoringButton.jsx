@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { GitBranch, Loader2, Pause, Play, Rocket, Trash2, Webcam } from 'lucide-react';
+import { ChevronRight, GitBranch, Loader2, Pause, Play, Rocket, Trash2, Webcam } from 'lucide-react';
+import { cn } from '../../../../shared/lib/cn';
 import {
     getClusterStackLinks,
     getDeploymentMonitoring,
@@ -12,14 +13,6 @@ import { isDeploymentReady } from './deploymentPresentation';
 
 const CENTRAL_NAMESPACE = 'llm-d-monitoring';
 const GRAFANA_PERFORMANCE_DASHBOARD = '/d/llm-d-performance/llm-d-performance-dashboard';
-
-const TONE_CLASSES = {
-    enabled: 'text-slate-400 hover:bg-slate-800/70 hover:text-[#037ffc] dark:hover:text-slate-100',
-    disabled: 'text-slate-400 hover:bg-slate-800/70 hover:text-[#037ffc] dark:hover:text-slate-100',
-    absent: 'text-slate-400 hover:bg-slate-800/70 hover:text-[#037ffc] dark:hover:text-slate-100',
-    unreachable: 'text-slate-400 hover:bg-slate-800/70 hover:text-[#037ffc] dark:hover:text-slate-100',
-    neutral: 'text-slate-400 hover:bg-slate-800/70 hover:text-[#037ffc] dark:hover:text-slate-100',
-};
 
 function MenuItem({ onClick, disabled, icon, label, danger = false }) {
     return (
@@ -128,19 +121,26 @@ export function DeploymentMonitoringButton({ deployment, onNavigate }) {
     };
 
     return (
-        <div className="relative inline-block">
+        <div className="contents">
             <button
                 ref={buttonRef}
                 type="button"
                 onClick={toggleOpen}
                 disabled={!clusterId}
+                role="menuitem"
                 aria-haspopup="menu"
                 aria-expanded={open}
                 title={clusterId ? 'Deployment monitoring' : 'No cluster associated with this deployment'}
-                aria-label="Deployment monitoring"
-                className={`rounded-lg p-1.5 transition disabled:cursor-not-allowed disabled:opacity-30 ${TONE_CLASSES[status] || TONE_CLASSES.neutral}`}
+                className={cn(
+                    'flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-normal text-slate-200 transition-colors hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40',
+                    open && 'bg-slate-800 text-white'
+                )}
             >
-                {loadingStatus ? <Loader2 size={14} className="animate-spin" /> : <Webcam size={14} />}
+                {loadingStatus
+                    ? <Loader2 size={14} className="shrink-0 animate-spin text-slate-400" />
+                    : <Webcam size={14} className="shrink-0 text-slate-400" />}
+                <span className="min-w-0 flex-1 truncate">Monitoring</span>
+                <ChevronRight size={13} className="shrink-0 text-slate-500" />
             </button>
 
             {open && createPortal(

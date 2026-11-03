@@ -323,11 +323,11 @@
           "hash": "b6c14616723729cb19ff650799661c36798ae4046489bca3e470aa5162ad9dff"
         },
         {
-          "path": "tools/reuse/semantic.smoke.mjs",
+          "path": "hack/reuse/semantic.smoke.mjs",
           "hash": "d77c5b83ce9235e3730e0251d5d7cd1442949a52b7717690f4de4e5b27d4e968"
         },
         {
-          "path": "tools/reuse/retrieval-cases.json",
+          "path": "hack/reuse/retrieval-cases.json",
           "hash": "9aa8958fda3795fd8b4fd53ca860586e70be2e51b142472727504d71ad23bbd8"
         }
       ],

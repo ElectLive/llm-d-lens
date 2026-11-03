@@ -39,7 +39,7 @@ class DatabaseBootstrapConfig(StrictModel):
     # Optional when mode == "embedded": a password to enforce on the embedded
     # PostgreSQL superuser instead of pgserver's default trust-based (no
     # password) auth -- see settings.py's _harden_embedded_postgres_password.
-    # Left unset (None) for e.g. scripts/lens-local.sh's local-dev embedded database,
+    # Left unset (None) for e.g. hack/lens-local.sh's local-dev embedded database,
     # which intentionally stays password-less for convenience.
     embedded_password: str | None = Field(default=None, alias="embeddedPassword")
     configured_at: datetime = Field(default_factory=utcnow, alias="configuredAt")

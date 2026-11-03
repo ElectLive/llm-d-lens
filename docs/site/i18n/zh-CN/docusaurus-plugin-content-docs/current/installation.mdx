@@ -101,8 +101,8 @@ Node.js 和软件包仓库，以及 Ubuntu 软件源；安装独立 Python 还�
 在仓库根目录使用本地源码启动器，而不是 Ubuntu 安装程序生成的打包部署：
 
 ```bash
-scripts/lens-local.sh start
-scripts/lens-local.sh status
+hack/lens-local.sh start
+hack/lens-local.sh status
 ```
 
 启动器准备 Node.js、npm 依赖和 Python 环境，然后在端口 `5173` 运行源码前端、
@@ -111,7 +111,7 @@ scripts/lens-local.sh status
 执行 `npm run build` 后，`npm start` 通过一个 Python 进程、一个端口提供构建后的前端、
 API 和 MCP。Node 用于前端构建，不参与生产请求处理。
 
-`scripts/lens-local.sh start` 和 `restart` 会在更改服务之前重新生成并验证复用地图。
+`hack/lens-local.sh start` 和 `restart` 会在更改服务之前重新生成并验证复用地图。
 无效的注册项会阻止启动，但不会停止已有服务；待处理的用户决策只会提示警告，
 不会被自动解决。若需限定部署节点，传入 `--target-node NODE` 和可选的
 `--kubeconfig FILE`，或者设置 `TARGET_NODE` 与 `KUBECONFIG`；

@@ -3,7 +3,7 @@ title: 环境变量
 description: 用于配置 Lens 后端、数据库和模型服务网关的环境变量。
 ---
 
-请在启动后端（`scripts/run-backend.sh`）之前设置这些变量，或者在你的
+请在启动后端（`hack/run-backend.sh`）之前设置这些变量，或者在你的
 shell/Compose/Helm values 中导出它们。大多数变量在本地开发环境下都有可用的
 默认值；生产环境以及模型服务网关部署通常需要显式设置认证和网关这两组变量。
 
@@ -78,7 +78,7 @@ Inference Payload Processor 的 Helm chart 和版本无法通过环境变量配�
 
 | 变量 | 说明 | 默认值 |
 | --- | --- | --- |
-| `TARGET_NODE` | `scripts/lens-local.sh check/start/restart` 的可选目标节点，可由 `--target-node` 覆盖；以 `PRISM_K8S_TARGET_NODE` 导出给后端。 | 未设置时兼容 `PRISM_K8S_TARGET_NODE` |
+| `TARGET_NODE` | `hack/lens-local.sh check/start/restart` 的可选目标节点，可由 `--target-node` 覆盖；以 `PRISM_K8S_TARGET_NODE` 导出给后端。 | 未设置时兼容 `PRISM_K8S_TARGET_NODE` |
 | `KUBECONFIG` | 当未注册集群专属 kubeconfig 时使用的后备配置；本地启动器支持用 `--kubeconfig FILE` 覆盖。 | Kubernetes 正常查找配置，通常为 `$HOME/.kube/config` |
 | `PRISM_GPU_PCI_ALLOWLIST` | 可选的逗号分隔 PCI 白名单；本地启动器保留显式设置，硬件发现仍由后端负责。 | 未设置 |
 | `PRISM_KUBERNETES_BACKEND` / `PRISM_KUBERNETES_READ_BACKEND` | 选择由哪种 Kubernetes 客户端实现来处理写入/读取操作。 | `PRISM_KUBERNETES_BACKEND`：`sdk`<br />`PRISM_KUBERNETES_READ_BACKEND`：`sdk` |

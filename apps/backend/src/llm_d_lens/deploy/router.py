@@ -27,15 +27,18 @@ from llm_d_lens.deploy.contracts import (
     DeploymentMetadataUpdateRequest,
     DeploymentRunCreateRequest,
     DeploymentRunStatus,
+    DeploymentScaleRequest,
     DeploymentStatus,
 )
 from llm_d_lens.deploy.endpoint import DeploymentEndpointResolutionError
 from llm_d_lens.deploy.executions import (
     DeploymentExecutionConflictError,
     DeploymentExecutionNotFoundError,
+    DeploymentScaleError,
     ensure_execution_endpoint,
     find_execution_context,
     list_execution_contexts,
+    scale_deployment_execution,
     serving_metadata,
     update_execution_metadata,
 )
@@ -791,6 +794,44 @@ async def patch_execution(execution_id: str, request: DeploymentMetadataUpdateRe
             )
             if value is not None
         ),
+    )
+    return context.api_payload()
+
+
+@router.post(
+    "/executions/{execution_id}/scale",
+    summary="Manually scale a deployment's live model-server replicas.",
+    description=(
+        "Scale the live Prefill and/or Decode model-server Deployments for a ready or failed deployment. "
+        "This changes Kubernetes replicas only; the saved configuration is unchanged."
+    ),
+    operation_id="scale_deployment_execution",
+)
+async def scale_execution(
+    execution_id: str,
+    request: DeploymentScaleRequest,
+    http_request: Request = None,
+):
+    """Scale live model-server Deployments without re-rendering the configuration."""
+    principal = current_principal(http_request)
+    existing = find_execution_context(execution_id)
+    if existing is not None:
+        _require_execution_permission(principal, existing, "deployment:execution:scale")
+    try:
+        context = await scale_deployment_execution(
+            execution_id,
+            request,
+            actor=principal.user_id if principal else None,
+        )
+    except DeploymentExecutionNotFoundError as error:
+        return problem(404, "Deployment not found", str(error), "deployment_not_found")
+    except DeploymentScaleError as error:
+        return problem(error.status_code, "Deployment scale failed", str(error), error.code)
+    logger.info(
+        "event=deployment_scaled execution_id=%s prefill_replicas=%s decode_replicas=%s",
+        execution_id,
+        request.prefill_replicas,
+        request.decode_replicas,
     )
     return context.api_payload()
 

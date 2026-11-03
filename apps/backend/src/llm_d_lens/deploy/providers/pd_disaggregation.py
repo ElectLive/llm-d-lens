@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 
+from llm_d_lens.configuration.manifest_facts import workload_roles
 from llm_d_lens.configuration.router_compatibility import compatible_router_values
 from llm_d_lens.core.hashing import stable_hash
 from llm_d_lens.deploy.data_plane import _deep_merge, router_data_plane_args, router_data_plane_effective_values
@@ -151,18 +152,19 @@ class PdDisaggregationAdapter:
         if process.returncode:
             raise ValueError(f"Kustomize render failed: {stderr.decode(errors='replace').strip()}")
         documents = [item for item in yaml.safe_load_all(stdout) if isinstance(item, dict)]
-        workload_names: list[str] = []
-        for role in ("prefill", "decode"):
-            deployment = next(
-                item
-                for item in documents
-                if item.get("kind") == "Deployment" and item["metadata"]["name"].endswith(role)
-            )
-            workload_names.append(str(deployment["metadata"]["name"]))
-            deployment["spec"]["replicas"] = parameters[role]["replicas"]
+        workloads = workload_roles(documents)
+        workload_names = list(dict.fromkeys(str(item["name"]) for item in workloads if item["name"]))
+        for workload in workloads:
+            role = workload["role"]
+            if role not in {"prefill", "decode"}:
+                continue
+            workload["spec"]["replicas"] = parameters[role]["replicas"]
             container = next(
-                item for item in deployment["spec"]["template"]["spec"]["containers"] if item["name"] == "modelserver"
+                (item for item in workload["pod"].get("containers", []) if item.get("name") == "modelserver"),
+                None,
             )
+            if container is None:
+                continue
             resolved_mount = parameters["resolved_mount"]
             model_source = resolved_mount["model_source"] if resolved_mount else "shared-path"
             cache_mounted = bool(resolved_mount or parameters["mount_path"])
@@ -187,13 +189,12 @@ class PdDisaggregationAdapter:
             container["args"] = args
             container["env"] = environment
             if resolved_mount or parameters["mount_path"]:
-                pod_spec = deployment["spec"]["template"]["spec"]
                 volume_source = (
                     resolved_mount["volume_source"]
                     if resolved_mount
                     else {"hostPath": {"path": parameters["mount_path"], "type": "DirectoryOrCreate"}}
                 )
-                pod_spec.setdefault("volumes", []).append({"name": "model-cache", **volume_source})
+                workload["pod"].setdefault("volumes", []).append({"name": "model-cache", **volume_source})
                 container.setdefault("volumeMounts", []).append(
                     {
                         "name": "model-cache",
@@ -222,26 +223,22 @@ class PdDisaggregationAdapter:
             gpu_request["exactly"]["count"] = parameters[role]["tensor_parallel_size"]
             if selectors:
                 gpu_request["exactly"].setdefault("selectors", []).extend(selectors)
-        for deployment in (item for item in documents if item.get("kind") == "Deployment"):
-            containers = deployment["spec"]["template"]["spec"].get("containers", [])
-            container = next((item for item in containers if item["name"] == "modelserver"), None)
+        for workload in workloads:
+            role = workload["role"]
+            if role not in {"prefill", "decode"}:
+                continue
+            container = next(
+                (item for item in workload["pod"].get("containers", []) if item.get("name") == "modelserver"),
+                None,
+            )
             if container is None:
                 continue
             container["image"] = parameters["image"]
             if not requires_dra_claim(accelerator=self._accelerator):
-                role = next(
-                    (
-                        candidate
-                        for candidate in ("prefill", "decode")
-                        if deployment["metadata"]["name"].endswith(candidate)
-                    ),
-                    None,
+                set_accelerator_request(
+                    container, None, parameters[role]["tensor_parallel_size"], accelerator=self._accelerator
                 )
-                if role is not None:
-                    set_accelerator_request(
-                        container, None, parameters[role]["tensor_parallel_size"], accelerator=self._accelerator
-                    )
-            apply_runtime_class(deployment["spec"]["template"]["spec"], accelerator=self._accelerator)
+            apply_runtime_class(workload["pod"], accelerator=self._accelerator)
         manifest = directory / "manifest.yaml"
         manifest.write_text(yaml.safe_dump_all(documents, sort_keys=False), encoding="utf-8")
         return GuideDeploymentArtifact(
@@ -329,16 +326,25 @@ class PdDisaggregationAdapter:
             **reproducibility,
         }
 
-    async def _readiness_deployments(self, execution) -> list[str]:
-        """Prefill/decode Deployment names as rendered for the active hardware.
+    @staticmethod
+    def _workload_resources(artifact) -> list[tuple[str, str]]:
+        """Readiness resources (kind, name) from the rendered workload manifest."""
+        manifest_ref = getattr(artifact, "manifest_ref", None)
+        if not manifest_ref or not Path(manifest_ref).is_file():
+            return []
+        documents = [item for item in yaml.safe_load_all(Path(manifest_ref).read_text(encoding="utf-8")) if item]
+        resources = []
+        for workload in workload_roles(documents):
+            item = (str(workload["kind"]), str(workload["name"]))
+            if item[1] and item not in resources:
+                resources.append(item)
+        return resources
 
-        Names are hardware/engine specific (the NVIDIA overlay renders
-        ``pd-disaggregation-nvidia-gpu-vllm-*`` while Intel XPU renders
-        ``pd-disaggregation-xpu-vllm-*``), so they are read from the deployment
-        contract rather than hardcoded. Records stored before the contract
-        carried them fall back to the namespace's actual Deployments.
-        """
+    async def _readiness_deployments(self, execution) -> list[str]:
         artifact = execution.get("_artifact")
+        resources = self._workload_resources(artifact) if artifact is not None else []
+        if resources:
+            return [name for _kind, name in resources]
         contract = artifact.deployment_contract if isinstance(artifact, GuideDeploymentArtifact) else {}
         names = [str(name) for name in contract.get("readinessDeployments") or []]
         if names:
@@ -357,9 +363,13 @@ class PdDisaggregationAdapter:
 
     async def readiness(self, execution):
         namespace = execution["namespace"]
-        for name in await self._readiness_deployments(execution):
-            status, stdout, stderr = await self._runner(
-                [
+        artifact = execution.get("_artifact")
+        resources = self._workload_resources(artifact) if artifact is not None else []
+        if not resources:
+            resources = [("Deployment", name) for name in await self._readiness_deployments(execution)]
+        for kind, name in resources:
+            if kind == "Deployment":
+                command = [
                     "kubectl",
                     "rollout",
                     "status",
@@ -368,7 +378,17 @@ class PdDisaggregationAdapter:
                     namespace,
                     f"--timeout={self._timeout}s",
                 ]
-            )
+            else:
+                command = [
+                    "kubectl",
+                    "wait",
+                    f"{kind.lower()}/{name}",
+                    "--namespace",
+                    namespace,
+                    "--for=condition=Available",
+                    f"--timeout={self._timeout}s",
+                ]
+            status, stdout, stderr = await self._runner(command)
             if status != 0:
                 return ValidationResult(False, [(stderr or stdout).strip()])
         status, stdout, stderr = await self._runner(
@@ -477,11 +497,43 @@ class PdDisaggregationAdapter:
         }
 
     async def stop(self, execution, artifact):
+        namespace = execution["namespace"]
+        resources = self._workload_resources(artifact)
+        if not resources:
+            names = await self._readiness_deployments({**execution, "_artifact": artifact})
+            resources = [("Deployment", name) for name in names]
         outputs = []
-        for name in await self._readiness_deployments({**execution, "_artifact": artifact}):
-            status, stdout, stderr = await self._runner(
-                ["kubectl", "scale", f"deployment/{name}", "--namespace", execution["namespace"], "--replicas=0"]
-            )
+        for kind, name in resources:
+            if kind == "Deployment":
+                command = ["kubectl", "scale", f"deployment/{name}", "--namespace", namespace, "--replicas=0"]
+            elif kind == "DisaggregatedSet":
+                manifest_ref = artifact.manifest_ref
+                document = next(
+                    (
+                        item
+                        for item in yaml.safe_load_all(Path(manifest_ref).read_text(encoding="utf-8"))
+                        if item.get("kind") == kind and item.get("metadata", {}).get("name") == name
+                    ),
+                    None,
+                )
+                roles = (document or {}).get("spec", {}).get("roles") or []
+                patch = [
+                    {"op": "replace", "path": f"/spec/roles/{index}/spec/replicas", "value": 0}
+                    for index, _role in enumerate(roles)
+                ]
+                command = [
+                    "kubectl",
+                    "patch",
+                    f"disaggregatedset/{name}",
+                    "--namespace",
+                    namespace,
+                    "--type=json",
+                    "--patch",
+                    json.dumps(patch),
+                ]
+            else:
+                command = ["kubectl", "scale", f"{kind.lower()}/{name}", "--namespace", namespace, "--replicas=0"]
+            status, stdout, stderr = await self._runner(command)
             outputs.append(stderr or stdout)
         return {"stopped": True, "output": "\n".join(outputs), "error": None}
 

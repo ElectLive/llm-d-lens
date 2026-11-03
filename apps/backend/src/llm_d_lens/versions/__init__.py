@@ -22,6 +22,9 @@ ROUTER_EPP_IMAGE_REPOSITORY = "ghcr.io/llm-d/llm-d-router-endpoint-picker"
 ROUTER_PD_SIDECAR_IMAGE_REPOSITORY = "ghcr.io/llm-d/llm-d-router-disagg-sidecar"
 INFERENCE_PAYLOAD_PROCESSOR_CHART = "oci://ghcr.io/llm-d/charts/payload-processor"
 INFERENCE_PAYLOAD_PROCESSOR_IMAGE_REPOSITORY = "ghcr.io/llm-d/llm-d-inference-payload-processor"
+LWS_CHART = "oci://registry.k8s.io/lws/charts/lws"
+LWS_NAMESPACE = "lws-system"
+LWS_RELEASE = "lws"
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,7 @@ class LlmdStack:
     llm_d_inference_payload_processor: str
     k8s_gateway_api: str
     k8s_gateway_api_inference_extension: str
+    k8s_lws: str
     gateway_providers: GatewayProviderVersions
 
 
@@ -61,6 +65,7 @@ def stack() -> LlmdStack:
         llm_d_inference_payload_processor=str(payload["llm_d_inference_payload_processor"]),
         k8s_gateway_api=str(payload["k8s_gateway_api"]),
         k8s_gateway_api_inference_extension=str(payload["k8s_gateway_api_inference_extension"]),
+        k8s_lws=str(payload["k8s_lws"]),
         gateway_providers=GatewayProviderVersions(
             istio=str(providers["istio"]),
             envoy_gateway=str(providers["envoy_gateway"]),
@@ -120,6 +125,14 @@ def inference_payload_processor_image() -> str:
     return f"{INFERENCE_PAYLOAD_PROCESSOR_IMAGE_REPOSITORY}:{stack().llm_d_inference_payload_processor}"
 
 
+def lws_version() -> str:
+    return stack().k8s_lws
+
+
+def lws_chart() -> str:
+    return LWS_CHART
+
+
 def gateway_provider_version(provider: str) -> str | None:
     return stack().gateway_providers.for_provider(provider)
 
@@ -135,6 +148,7 @@ def describe() -> dict[str, Any]:
         "llm_d_inference_payload_processor": current.llm_d_inference_payload_processor,
         "k8s_gateway_api": current.k8s_gateway_api,
         "k8s_gateway_api_inference_extension": current.k8s_gateway_api_inference_extension,
+        "k8s_lws": current.k8s_lws,
         "gateway_providers": {
             "istio": current.gateway_providers.istio,
             "envoy_gateway": current.gateway_providers.envoy_gateway,

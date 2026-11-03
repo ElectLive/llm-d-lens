@@ -99,9 +99,11 @@ policy modes and request examples.
 5. If needed, change **Rows per page** and use the pager to move through the list.
 6. If no rows match, click **Clear filters**.
 
+The **Cluster** and **Namespace** columns each include a copy button.
+
 ## View deployment details
 
-1. In the deployment row, click the action with tooltip **View details**.
+1. In the deployment row, open the actions menu and select **View details**.
 2. In the drawer, review the sections **Basic Information**, **Model & Serving Engine**, **Cluster & Environment**, **Network & Endpoints**, and **Audit & Timeline**.
 3. Use the copy buttons beside values such as **Namespace**, **Cluster Session ID**, **Container Image**, **Internal Endpoint**, **Forwarded Endpoint**, or **Execution ID** when you need to reuse them elsewhere.
 4. If the deployment failed, read the failure banner before making changes.
@@ -171,7 +173,7 @@ manifests; recreate them to receive the new default or missing-mount completion.
 
 1. To see pod status inline, click the row toggle with tooltip **Show pods**.
 2. In the expanded row, review the pod table columns **Pod**, **Status**, **Restarts**, **Node**, and **Pod IP**.
-3. For the full log viewer, click the action with tooltip **View Pods & Logs**.
+3. For the full log viewer, open the actions menu and select **View pods & logs**.
 4. Use the node filter or search fields to find the pod.
 5. Click a pod card to open **Pod Logs:** for that pod.
 6. If a pod has multiple containers, choose the needed **Container: ...** entry.
@@ -180,16 +182,28 @@ manifests; recreate them to receive the new default or missing-mount completion.
 9. Leave **Auto-refresh (5s)** enabled to keep the pod list and logs live.
 10. Use **Filter log lines...** to narrow the log output, or click **Copy** to copy the current log text.
 
+## Graceful shutdown defaults
+
+Lens creates model-server Pods with a **120-second** termination grace period and a **5-second preStop delay**. vLLM containers also receive `--shutdown-timeout=90` when their invocation is a single recognizable `vllm serve` or `python -m vllm.entrypoints...` command (including `sh -c` scripts); compound shell scripts, unrecognized entrypoints and non-literal existing values are left unchanged with a deployment warning. During scale-down, rolling updates or node drains, Kubernetes removes the Pod from routing first; vLLM can then finish in-flight requests for up to 90 seconds before termination. Deployments created before these defaults were introduced must be restarted or recreated to receive them. SGLang does not support the vLLM flag, so only endpoint removal and the grace period apply. For P/D deployments, scale down decode before prefill. When a model container has a `--kv-transfer-config`, Lens sets `kv_load_failure_policy=recompute` in that JSON so Decode can recompute a failed Prefill KV transfer.
+
 ## Create a local port-forward for a ready deployment
 
 1. Find a deployment that is already **Ready**.
-2. In that row, click the action with tooltip **Create local port-forward**.
+2. In that row, open the actions menu and select **Create local port-forward**.
 3. Wait for the success notice **Local endpoint connected**.
 4. Copy the updated local endpoint from the table if you want to call the service from your workstation.
 
+## Scale a deployment
+
+1. In the deployment row, open the actions menu and select **Scale deployment**.
+2. For a P/D deployment, set **Prefill replicas** and **Decode replicas**. For an aggregated deployment, set **Replicas**.
+3. Click **Scale deployment**.
+
+Manual scaling changes live Kubernetes model-server replicas only. Restarting the deployment restores its configured replica count. DisaggregatedSet deployments are created with `slices: 1`; manual scaling changes role replicas and never changes `spec.slices`. For a P/D deployment, scale down Decode before Prefill; Prefill scale-down can interrupt in-flight KV transfers, but Lens configures `kv_load_failure_policy=recompute` whenever a `--kv-transfer-config` is present.
+
 ## Open deployment monitoring and profiling
 
-1. In the deployment row, click the action with tooltip **Deployment monitoring**.
+1. In the deployment row, open the actions menu and select **Monitoring**.
 2. If monitoring has not been installed yet, click **Install**.
 3. If monitoring is present but paused, click **Enable**.
 
@@ -203,7 +217,7 @@ manifests; recreate them to receive the new default or missing-mount completion.
 
 ## Edit the deployment name and description
 
-1. In the deployment row, click the action with tooltip **Edit name and description**.
+1. In the deployment row, open the actions menu and select **Edit name and description**.
 2. In **Edit deployment**, update **Display name** and **Description**.
 3. Click **Save changes**.
 4. If you decide not to keep the edit, click **Cancel**.
@@ -220,7 +234,7 @@ converted into model grants.
 
 ## Delete a deployment
 
-1. In the deployment row, click the action with tooltip **Delete deployment**.
+1. In the deployment row, open the actions menu and select **Delete deployment**.
 2. In **Delete deployment**, review **Execution ID**, **Cluster**, and **Namespace**.
 3. Leave **Also delete the Kubernetes namespace** checked if you want Lens to remove the namespace and everything inside it, or clear it to remove only the deployment record.
 4. In **Type `<phrase>` to confirm**, enter the exact confirmation phrase shown in the dialog.

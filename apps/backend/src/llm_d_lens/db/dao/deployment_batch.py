@@ -194,6 +194,19 @@ class DeploymentEvidenceDao(BaseDao):
             session.flush()
             return row.to_dto()
 
+    def update_provenance(self, execution_id: str, provenance: dict) -> DeploymentExecution:
+        """Patch provenance under the row lock, preserving status and endpoint state."""
+        with self._transaction() as session:
+            row = session.get(DeploymentExecutionRow, execution_id, with_for_update=True)
+            if row is None:
+                raise DeploymentDaoError(f"deployment execution not found: {execution_id}")
+            current = row.to_dto()
+            current.provenance = provenance
+            current.updated_at = utcnow()
+            row.sync_from_dto(current, cluster_id=_resolve_cluster_id(current.provenance))
+            session.flush()
+            return row.to_dto()
+
     def delete(self, execution_id: str) -> None:
         with self._transaction() as session:
             row = session.get(DeploymentExecutionRow, execution_id, with_for_update=True)

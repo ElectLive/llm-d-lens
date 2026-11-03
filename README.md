@@ -72,11 +72,11 @@ for prerequisites, proxy settings and options.
 To install dependencies and run directly from the source checkout:
 
 ```bash
-scripts/lens-local.sh start
-scripts/lens-local.sh status
+hack/lens-local.sh start
+hack/lens-local.sh status
 ```
 
-The source frontend runs on port `5173` and the unified Python API on `3000`. `scripts/lens-local.sh` prepares dependencies, manages both processes and validates the Python MCP catalog. To constrain deployments to one node, use `scripts/lens-local.sh restart --target-node node-a --kubeconfig "$HOME/.kube/config"`, or set `TARGET_NODE` and `KUBECONFIG`; no target-specific configuration file is needed. `npm run dev:web` also starts both development processes. For production, `npm run build` followed by `npm start` serves the built frontend, API and MCP from Python on one port. See the [CLI Reference](https://llm-d-incubation.github.io/llm-d-lens/cli-reference) for every subcommand.
+The source frontend runs on port `5173` and the unified Python API on `3000`. `hack/lens-local.sh` prepares dependencies, manages both processes and validates the Python MCP catalog. To constrain deployments to one node, use `hack/lens-local.sh restart --target-node node-a --kubeconfig "$HOME/.kube/config"`, or set `TARGET_NODE` and `KUBECONFIG`; no target-specific configuration file is needed. `npm run dev:web` also starts both development processes. For production, `npm run build` followed by `npm start` serves the built frontend, API and MCP from Python on one port. See the [CLI Reference](https://llm-d-incubation.github.io/llm-d-lens/cli-reference) for every subcommand.
 
 Build and test:
 

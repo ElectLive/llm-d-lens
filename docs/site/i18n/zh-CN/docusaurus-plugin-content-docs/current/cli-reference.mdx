@@ -3,17 +3,17 @@ title: CLI 参考
 description: 用于运行、安装和管理 Lens 的命令行工具。
 ---
 
-## `scripts/lens-local.sh`（本地源码安装与服务管理）
+## `hack/lens-local.sh`（本地源码安装与服务管理）
 
 | 命令 | 用途 |
 | --- | --- |
-| `scripts/lens-local.sh check` | 在不启动任何服务的情况下校验环境。 |
-| `scripts/lens-local.sh start` | 准备依赖并在后台启动 Vite 和统一 Python 后端。日志位于 `$LENS_LOG_DIR/dev/`，默认是 `~/.local/state/lens/logs/dev/`。会先校验复用地图和 MCP 目录。 |
-| `scripts/lens-local.sh stop` | 停止由本脚本启动的所有服务。 |
-| `scripts/lens-local.sh restart` | 启用目标节点模式时先检查节点，再准备依赖并校验复用地图，全部通过后才停止并重启服务。 |
-| `scripts/lens-local.sh status` | 显示哪些服务正在运行及其 PID。 |
-| `scripts/lens-local.sh clean [-y\|--yes]` | 停止服务，并删除内嵌数据库以及 `~/.llm-d-lens` 下的所有本地应用数据。 |
-| `scripts/lens-local.sh install-node` | 将受支持的 Node.js 安装到 `.dev-tools/`（当系统的 Node 缺失或版本过旧时会自动使用）。 |
+| `hack/lens-local.sh check` | 在不启动任何服务的情况下校验环境。 |
+| `hack/lens-local.sh start` | 准备依赖并在后台启动 Vite 和统一 Python 后端。日志位于 `$LENS_LOG_DIR/dev/`，默认是 `~/.local/state/lens/logs/dev/`。会先校验复用地图和 MCP 目录。 |
+| `hack/lens-local.sh stop` | 停止由本脚本启动的所有服务。 |
+| `hack/lens-local.sh restart` | 启用目标节点模式时先检查节点，再准备依赖并校验复用地图，全部通过后才停止并重启服务。 |
+| `hack/lens-local.sh status` | 显示哪些服务正在运行及其 PID。 |
+| `hack/lens-local.sh clean [-y\|--yes] [--cache\|--hard\|--all]` | 停止服务并删除应用数据和日志。`--cache` 还会删除源码 checkout 和 benchmark venv；`--hard` 还会删除开发 venv、工具链、TLS 证书、node_modules 和构建产物；`--all` 同时删除两者。 |
+| `hack/lens-local.sh install-node` | 将受支持的 Node.js 安装到 `.dev-tools/`（当系统的 Node 缺失或版本过旧时会自动使用）。 |
 
 端口可以通过 `FRONTEND_PORT`（默认 `5173`）和 `BACKEND_PORT`（默认 `3000`）配置。
 `SERVER_PORT` 仍作为 Python 端口的后备值。旧的 `restart server` 目标会选择 `backend`；
@@ -27,8 +27,8 @@ kubeconfig 参数指定单个文件，相对路径以执行命令时所在目录
 环境变量 `KUBECONFIG` 中的文件列表保持原样。
 
 ```bash
-scripts/lens-local.sh restart --target-node node-a --kubeconfig "$HOME/.kube/config"
-TARGET_NODE=node-a KUBECONFIG="$HOME/.kube/config" scripts/lens-local.sh check
+hack/lens-local.sh restart --target-node node-a --kubeconfig "$HOME/.kube/config"
+TARGET_NODE=node-a KUBECONFIG="$HOME/.kube/config" hack/lens-local.sh check
 ```
 
 不读取目标节点专用配置文件，也不保存上次的目标节点；每次启动时传参，
@@ -78,7 +78,7 @@ TARGET_NODE=node-a KUBECONFIG="$HOME/.kube/config" scripts/lens-local.sh check
 
 完整用法参见[安装](/installation)和[升级](/upgrade)。
 
-## `node scripts/generate-mcp-tools.mjs`
+## `node hack/generate-mcp-tools.mjs`
 
 根据当前 REST schema 校验 Python MCP 目录，遇到非预期跳过的操作时失败。
 `--check` 执行相同校验，`--json` 导出目录，不再生成 Node 服务端文件。

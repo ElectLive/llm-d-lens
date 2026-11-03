@@ -2284,6 +2284,20 @@ def _stage_metric_summary(result_root: Path, stage_index: int) -> dict:
     return _metric_summary(result_root, pattern=f"stage_{stage_index}_lifecycle_metrics.json")
 
 
+def _with_local_storage(workload: dict) -> dict:
+    """Ensure the profile has the storage block llm-d-benchmark's wrapper rewrites.
+
+    The harness sets ``storage.local_storage.path`` to its results directory
+    before starting inference-perf, so the value here is only a placeholder.
+    """
+    storage = workload.setdefault("storage", {})
+    if isinstance(storage, dict):
+        local = storage.setdefault("local_storage", {})
+        if isinstance(local, dict):
+            local.setdefault("path", "/workspace")
+    return workload
+
+
 def _inference_server_config(model: str, endpoint_url: str, api_key: str | None) -> dict:
     """inference-perf ``server`` block; carries ``api_key`` when routed by a Gateway."""
     server = {"type": "vllm", "model_name": model, "base_url": endpoint_url, "ignore_eos": True}
@@ -2327,7 +2341,7 @@ def _matrix_workload_yaml(
             "request_lifecycle": {"summary": True, "per_stage": True, "per_request": False},
         },
     }
-    return yaml.safe_dump(enable_request_reports(workload, targets or {}), sort_keys=False)
+    return yaml.safe_dump(_with_local_storage(enable_request_reports(workload, targets or {})), sort_keys=False)
 
 
 def _shared_prefix_workload_yaml(
@@ -2377,7 +2391,7 @@ def _shared_prefix_workload_yaml(
             "request_lifecycle": {"summary": True, "per_stage": True, "per_request": False},
         },
     }
-    return yaml.safe_dump(enable_request_reports(workload, targets or {}), sort_keys=False)
+    return yaml.safe_dump(_with_local_storage(enable_request_reports(workload, targets or {})), sort_keys=False)
 
 
 def _inline_workload_yaml(
@@ -2386,7 +2400,7 @@ def _inline_workload_yaml(
     """Bind a user-authored inference-perf workload to the selected deployment."""
     workload = validate_inline_workload(content)
     workload["server"] = _inference_server_config(model, endpoint_url, api_key)
-    return yaml.safe_dump(enable_request_reports(workload, targets or {}), sort_keys=False)
+    return yaml.safe_dump(_with_local_storage(enable_request_reports(workload, targets or {})), sort_keys=False)
 
 
 async def _kubectl_json(arguments: list[str], environment: dict[str, str]) -> dict | None:
@@ -2548,6 +2562,63 @@ async def _kubernetes_resource_snapshot(
     }
 
 
+def _benchmark_python_floor(root: Path) -> tuple[int, int] | None:
+    """Read the checkout's ``requires-python >=X.Y`` floor, when declared."""
+    try:
+        text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r'(?m)^\s*requires-python\s*=\s*"([^"]+)"', text)
+    if not match:
+        return None
+    floor = re.search(r">=\s*(\d+)\.(\d+)", match.group(1))
+    return (int(floor.group(1)), int(floor.group(2))) if floor else None
+
+
+def _python_version(executable: str | Path) -> tuple[int, int] | None:
+    try:
+        result = subprocess.run(
+            [
+                str(executable),
+                "-c",
+                "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.fullmatch(r"(\d+)\.(\d+)\s*", getattr(result, "stdout", "") or "")
+    return (int(match.group(1)), int(match.group(2))) if result.returncode == 0 and match else None
+
+
+def _benchmark_interpreter(root: Path) -> tuple[str | None, str | None]:
+    """Resolve a Python/uv pair that satisfies the benchmark checkout."""
+    floor = _benchmark_python_floor(root) or (3, 11)
+    override = os.environ.get("LENS_BENCHMARK_PYTHON", "").strip()
+    if override:
+        if (_python_version(override) or (0, 0)) < floor:
+            raise RuntimeError(
+                f"LENS_BENCHMARK_PYTHON={override} does not satisfy Python "
+                f">={floor[0]}.{floor[1]} required by llm-d-benchmark"
+            )
+        return override, None
+    executable = shutil.which(f"python{floor[0]}.{floor[1]}")
+    if executable and (_python_version(executable) or (0, 0)) >= floor:
+        return executable, None
+    if (_python_version(sys.executable) or (0, 0)) >= floor:
+        return sys.executable, None
+    uv = shutil.which("uv")
+    if uv:
+        return None, uv
+    raise RuntimeError(
+        f"llm-d-benchmark requires Python >={floor[0]}.{floor[1]}; install "
+        f"python{floor[0]}.{floor[1]} or uv (or set LENS_BENCHMARK_PYTHON)"
+    )
+
+
 def _benchmark_ready(root: Path) -> bool:
     """True when the managed benchmark install is present *and* executable.
 
@@ -2566,7 +2637,10 @@ def _benchmark_ready(root: Path) -> bool:
     if not shebang.startswith("#!"):
         return False
     interpreter = shebang[2:].strip()
-    return bool(interpreter) and Path(interpreter).exists()
+    if not interpreter or not Path(interpreter).exists():
+        return False
+    floor = _benchmark_python_floor(root)
+    return floor is None or (_python_version(interpreter) or (0, 0)) >= floor
 
 
 async def _prepare_benchmark_runtime(source: dict | None = None) -> tuple[str, Path]:
@@ -2599,23 +2673,28 @@ def _install_benchmark_checkout(root: Path) -> None:
             return
         venv = root / ".venv"
         shutil.rmtree(venv, ignore_errors=True)
-        subprocess.run([sys.executable, "-m", "venv", str(venv)], timeout=120, check=True)
+        floor = _benchmark_python_floor(root)
+        interpreter, uv = _benchmark_interpreter(root) if floor else (sys.executable, None)
+        if uv:
+            minimum = floor or (3, 11)
+            subprocess.run(
+                [uv, "venv", "--python", f"{minimum[0]}.{minimum[1]}", str(venv)],
+                timeout=300,
+                check=True,
+            )
+        else:
+            subprocess.run([interpreter, "-m", "venv", str(venv)], timeout=120, check=True)
         # Newer checkouts split reports into a workspace distribution which may
         # not yet be published on PyPI. Resolve it from the same source revision
         # in the same pip transaction; older checkouts have no separate package.
         report = root / "benchmark-report"
         workspace_packages = [str(report)] if (report / "pyproject.toml").is_file() else []
+        if uv:
+            install_command = [uv, "pip", "install", "--python", str(venv / "bin" / "python")]
+        else:
+            install_command = [str(venv / "bin" / "python"), "-m", "pip", "install"]
         install = subprocess.run(
-            [
-                str(venv / "bin" / "python"),
-                "-m",
-                "pip",
-                "install",
-                "-e",
-                str(root),
-                *workspace_packages,
-                _BENCHMARK_PLANNER,
-            ],
+            [*install_command, "-e", str(root), *workspace_packages, _BENCHMARK_PLANNER],
             capture_output=True,
             text=True,
             timeout=1800,

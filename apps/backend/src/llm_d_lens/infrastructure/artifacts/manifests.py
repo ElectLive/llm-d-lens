@@ -187,7 +187,8 @@ def _validate_manifest_contract(manifest: str, deployment: dict[str, Any]) -> No
     deployments = {
         item.get("metadata", {}).get("name")
         for item in documents
-        if item.get("kind") == "Deployment" and isinstance(item.get("metadata"), dict)
+        if item.get("kind") in {"Deployment", "LeaderWorkerSet", "DisaggregatedSet"}
+        and isinstance(item.get("metadata"), dict)
     }
     missing_deployments = [name for name in readiness if name not in deployments]
     if missing_deployments:

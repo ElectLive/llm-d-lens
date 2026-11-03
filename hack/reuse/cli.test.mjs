@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 
-const cli = resolve('tools/reuse/cli.mjs');
+const cli = resolve('hack/reuse/cli.mjs');
 function setup(t) {
   const root = mkdtempSync(join(tmpdir(), 'reuse-cli-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

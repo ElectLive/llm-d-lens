@@ -20,17 +20,125 @@ def _documents(manifest: str) -> list[dict[str, Any]]:
         raise ValueError(f"rendered manifest is invalid YAML: {error}") from error
 
 
+def _role_from(name: str, labels: dict[str, Any]) -> str:
+    label_role = str(labels.get("llm-d.ai/role") or "").lower()
+    resource_name = name.lower()
+    for role in ("prefill", "decode", "encode"):
+        if label_role == role or role in resource_name:
+            return role
+    return "serving"
+
+
+def workload_roles(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Describe model-server workloads across Deployment, LWS and DisaggregatedSet.
+
+    Each entry carries the parent resource, the role spec and pod template plus
+    the JSON pointers Lens uses to patch them. This keeps planning, validation
+    and provider rendering on one manifest shape independent of the workload API.
+    """
+    workloads: list[dict[str, Any]] = []
+    for document_index, document in enumerate(documents):
+        kind = document.get("kind")
+        metadata = document.get("metadata") or {}
+        name = str(metadata.get("name") or "")
+        spec = document.get("spec") or {}
+        if kind == "Deployment":
+            template = spec.get("template") or {}
+            pod = template.get("spec") or {}
+            if not isinstance(pod, dict):
+                continue
+            labels = {**(template.get("metadata", {}).get("labels") or {}), **(metadata.get("labels") or {})}
+            workloads.append(
+                {
+                    "document": document,
+                    "document_index": document_index,
+                    "role_document": document,
+                    "kind": kind,
+                    "name": name,
+                    "role": _role_from(name, labels),
+                    "pod_labels": labels,
+                    "spec": spec,
+                    "pod": pod,
+                    "spec_pointer": f"/documents/{document_index}/spec",
+                    "pod_pointer": f"/documents/{document_index}/spec/template/spec",
+                    "replicas_pointer": f"/documents/{document_index}/spec/replicas",
+                    "replicas": spec.get("replicas", 1),
+                    "slices": 1,
+                }
+            )
+        elif kind == "LeaderWorkerSet":
+            template = spec.get("leaderWorkerTemplate") or {}
+            worker = template.get("workerTemplate") or {}
+            pod = worker.get("spec") or {}
+            if not isinstance(pod, dict):
+                continue
+            labels = {**(worker.get("metadata", {}).get("labels") or {}), **(metadata.get("labels") or {})}
+            workloads.append(
+                {
+                    "document": document,
+                    "document_index": document_index,
+                    "role_document": document,
+                    "kind": kind,
+                    "name": name,
+                    "role": _role_from(name, labels),
+                    "pod_labels": labels,
+                    "spec": spec,
+                    "pod": pod,
+                    "spec_pointer": f"/documents/{document_index}/spec",
+                    "pod_pointer": f"/documents/{document_index}/spec/leaderWorkerTemplate/workerTemplate/spec",
+                    "replicas_pointer": f"/documents/{document_index}/spec/replicas",
+                    "replicas": spec.get("replicas", 1),
+                    "slices": 1,
+                }
+            )
+        elif kind == "DisaggregatedSet":
+            slices = spec.get("slices", 1) or 1
+            for role_index, role in enumerate(spec.get("roles") or []):
+                if not isinstance(role, dict):
+                    continue
+                role_spec = role.get("spec") or {}
+                worker = (role_spec.get("leaderWorkerTemplate") or {}).get("workerTemplate") or {}
+                pod = worker.get("spec") or {}
+                if not isinstance(pod, dict):
+                    continue
+                role_name = str(role.get("name") or "")
+                labels = {
+                    **(role.get("metadata", {}).get("labels") or {}),
+                    **(worker.get("metadata", {}).get("labels") or {}),
+                    **(metadata.get("labels") or {}),
+                }
+                pointer = f"/documents/{document_index}/spec/roles/{role_index}/spec"
+                workloads.append(
+                    {
+                        "document": document,
+                        "document_index": document_index,
+                        "role_document": role,
+                        "kind": kind,
+                        "name": name,
+                        "role": _role_from(role_name, labels),
+                        "role_index": role_index,
+                        "pod_labels": labels,
+                        "spec": role_spec,
+                        "pod": pod,
+                        "spec_pointer": pointer,
+                        "pod_pointer": pointer + "/leaderWorkerTemplate/workerTemplate/spec",
+                        "replicas_pointer": pointer + "/replicas",
+                        "replicas": role_spec.get("replicas", 1),
+                        "slices": slices,
+                    }
+                )
+    return workloads
+
+
 def _modelserver_containers(documents: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     result: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for document in documents:
-        if document.get("kind") != "Deployment":
-            continue
-        containers = (((document.get("spec") or {}).get("template") or {}).get("spec") or {}).get("containers")
+    for workload in workload_roles(documents):
+        containers = workload["pod"].get("containers")
         if not isinstance(containers, list):
             continue
         for container in containers:
             if isinstance(container, dict) and container.get("name") == "modelserver":
-                result.append((document, container))
+                result.append((workload, container))
     return result
 
 
@@ -57,6 +165,13 @@ def _shell_tokens(script: str, deployment_name: str) -> list[str]:
         raise ValueError(f"model server {deployment_name} uses a compound shell invocation")
     if tokens and tokens[0] == "exec":
         tokens = tokens[1:]
+    if (
+        len(tokens) >= 3
+        and PurePosixPath(tokens[0]).name in {"python", "python3"}
+        and tokens[1] == "-m"
+        and tokens[2].startswith("vllm.entrypoints.")
+    ):
+        return tokens[3:]
     if len(tokens) < 2 or PurePosixPath(tokens[0]).name != "vllm" or tokens[1] != "serve":
         raise ValueError(f"model server {deployment_name} does not use a recognizable vllm serve invocation")
     return tokens[2:]
@@ -78,6 +193,13 @@ def _invocation_tokens(container: dict[str, Any], deployment_name: str) -> list[
         return _shell_tokens(combined[2], deployment_name)
 
     if command:
+        if (
+            len(command) >= 3
+            and PurePosixPath(command[0]).name in {"python", "python3"}
+            and command[1] == "-m"
+            and command[2].startswith("vllm.entrypoints.")
+        ):
+            return [*command[3:], *args]
         if PurePosixPath(command[0]).name != "vllm":
             raise ValueError(f"model server {deployment_name} does not use a recognizable vllm serve invocation")
         if len(command) >= 2 and command[1] == "serve":
@@ -85,6 +207,13 @@ def _invocation_tokens(container: dict[str, Any], deployment_name: str) -> list[
         if len(command) == 1 and args and args[0] == "serve":
             return list(args[1:])
         raise ValueError(f"model server {deployment_name} does not use a recognizable vllm serve invocation")
+    if (
+        len(args) >= 3
+        and PurePosixPath(args[0]).name in {"python", "python3"}
+        and args[1] == "-m"
+        and args[2].startswith("vllm.entrypoints.")
+    ):
+        return list(args[3:])
     if len(args) >= 2 and PurePosixPath(args[0]).name == "vllm" and args[1] == "serve":
         return list(args[2:])
     if args:
@@ -127,6 +256,12 @@ def _argument_value(tokens: list[str], names: set[str], deployment_name: str) ->
     return values[-1] if values else _MISSING
 
 
+def vllm_argument_value(container: dict[str, Any], names: set[str], deployment_name: str) -> str | None:
+    """Return one vLLM option from a recognizable invocation; raise ValueError when ambiguous."""
+    value = _argument_value(_invocation_tokens(container, deployment_name), names, deployment_name)
+    return None if value is _MISSING else str(value)
+
+
 def _model_argument(tokens: list[str], deployment_name: str) -> str:
     flagged = _option(tokens, {"--model", "--model-path"}, deployment_name)
     positional = next((token for token in tokens if not token.startswith("-")), None)
@@ -136,18 +271,6 @@ def _model_argument(tokens: list[str], deployment_name: str) -> str:
     if not model:
         raise ValueError(f"model server {deployment_name} does not declare a served model")
     return model
-
-
-def _role(deployment: dict[str, Any]) -> str:
-    metadata = deployment.get("metadata") or {}
-    template_metadata = ((deployment.get("spec") or {}).get("template") or {}).get("metadata") or {}
-    labels = {**(template_metadata.get("labels") or {}), **(metadata.get("labels") or {})}
-    label_role = str(labels.get("llm-d.ai/role") or "").lower()
-    resource_name = str(metadata.get("name") or "").lower()
-    for role in ("prefill", "decode", "encode"):
-        if label_role == role or role in resource_name:
-            return role
-    return "serving"
 
 
 def _component(content: dict[str, Any], name: str) -> dict[str, Any] | None:
@@ -214,10 +337,6 @@ def _positive_int(value: Any, label: str) -> int:
     return value
 
 
-def _workload_role(deployment_type: str, deployment: dict[str, Any]) -> str:
-    return "serving" if deployment_type in {"baseline", "tiered_cache"} else _role(deployment)
-
-
 def _environment(container: dict[str, Any], deployment_name: str) -> dict[str, str | None]:
     entries = container.get("env") or []
     if not isinstance(entries, list):
@@ -253,7 +372,11 @@ def _validate_argument(tokens: list[str], deployment_name: str, argument_name: s
 
 
 def _validate_storage(
-    deployment: dict[str, Any], container: dict[str, Any], runtime: dict[str, Any], deployment_name: str
+    deployment: dict[str, Any],
+    container: dict[str, Any],
+    runtime: dict[str, Any],
+    deployment_name: str,
+    pod: dict[str, Any] | None = None,
 ) -> None:
     source = runtime.get("modelSource")
     host_path = runtime.get("mountPath")
@@ -267,7 +390,8 @@ def _validate_storage(
     if source not in {"shared-path", "auto-cache"}:
         raise ValueError("configuration storage requires runtime.modelSource shared-path or auto-cache")
     mounts = container.get("volumeMounts") or []
-    volumes = (((deployment.get("spec") or {}).get("template") or {}).get("spec") or {}).get("volumes") or []
+    pod = pod or (((deployment.get("spec") or {}).get("template") or {}).get("spec") or {})
+    volumes = pod.get("volumes") or []
     if not isinstance(mounts, list) or not isinstance(volumes, list):
         raise ValueError(f"model server {deployment_name} storage is ambiguous")
     model_mounts = [mount for mount in mounts if isinstance(mount, dict) and mount.get("mountPath") == "/model-cache"]
@@ -352,23 +476,24 @@ def validate_manifest_facts(configuration_content: dict[str, Any], manifest: str
         return
     workloads = _modelserver_containers(_documents(manifest))
     if not workloads:
-        raise ValueError("rendered manifest has no modelserver Deployment for explicit configuration facts")
+        raise ValueError("rendered manifest has no modelserver workload for explicit configuration facts")
     workload_facts = []
-    for deployment, container in workloads:
-        name = str((deployment.get("metadata") or {}).get("name") or "<unnamed>")
+    for workload, container in workloads:
+        name = f"{workload.get('name') or '<unnamed>'}/{workload['role']}"
         tokens = _invocation_tokens(container, name)
-        role = _workload_role(deployment_type, deployment)
-        workload_facts.append((deployment, container, name, role, tokens))
+        role = "serving" if deployment_type in {"baseline", "tiered_cache"} else workload["role"]
+        workload_facts.append((workload, container, name, role, tokens))
 
     for role, component in components.items():
         role_workloads = [workload for workload in workload_facts if workload[3] == role]
         if not role_workloads:
-            raise ValueError(f"rendered manifest has no modelserver Deployment for configuration role {role}")
+            raise ValueError(f"rendered manifest has no modelserver workload for configuration role {role}")
         if "replicaCount" in component:
             expected_replicas = _positive_int(component["replicaCount"], f"{role} replica count")
             actual_replicas = sum(
-                _positive_int((deployment.get("spec") or {}).get("replicas", 1), f"{name} replica count")
-                for deployment, _container, name, _role_name, _tokens in role_workloads
+                _positive_int(workload.get("replicas", 1), f"{name} replica count")
+                * _positive_int(workload.get("slices", 1), f"{name} slice count")
+                for workload, _container, name, _role_name, _tokens in role_workloads
             )
             if actual_replicas != expected_replicas:
                 raise ValueError(
@@ -376,7 +501,7 @@ def validate_manifest_facts(configuration_content: dict[str, Any], manifest: str
                 )
         if "tensorParallelSize" in component:
             expected_tp = _positive_int(component["tensorParallelSize"], f"{role} tensor parallel size")
-            for _deployment, _container, name, _role_name, tokens in role_workloads:
+            for _workload, _container, name, _role_name, tokens in role_workloads:
                 actual = _argument_value(
                     tokens,
                     {"--tensor-parallel-size", "--tensor_parallel_size", "--tp_size"},
@@ -404,7 +529,8 @@ def validate_manifest_facts(configuration_content: dict[str, Any], manifest: str
         raise ValueError(f"runtime.modelServer {model_server!r} cannot be proved by a vllm manifest")
     expected_argument = "/model-cache" if runtime.get("modelSource") == "shared-path" else expected_model
     global_max_model_len = model.get("maxModelLen") if isinstance(model, dict) else None
-    for deployment, container, name, role, tokens in workload_facts:
+    for workload, container, name, role, tokens in workload_facts:
+        deployment = workload["document"]
         if expected_argument:
             actual_model = _model_argument(tokens, name)
             if actual_model != expected_argument:
@@ -462,7 +588,7 @@ def validate_manifest_facts(configuration_content: dict[str, Any], manifest: str
                     f"model server {name} environment variable {override_name} is "
                     f"{environment.get(override_name)!r}; configuration requires {str(override['value'])!r}"
                 )
-        _validate_storage(deployment, container, runtime, name)
+        _validate_storage(deployment, container, runtime, name, workload["pod"])
         _validate_kv_topic(tokens, name, expected_model, required=precise_guide)
 
     for override in custom:

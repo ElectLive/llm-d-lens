@@ -66,14 +66,13 @@ def validate_cached_model_arguments(overrides: dict[str, Any], manifest: str) ->
         _model_argument,
         _modelserver_containers,
         _option,
-        _role,
     )
 
     expected = overrides["_model_cache_dependencies"]
     seen = set()
-    for deployment, container in _modelserver_containers(_documents(manifest)):
-        name = str((deployment.get("metadata") or {}).get("name") or "<unnamed>")
-        role = _role(deployment) if "prefill" in expected else "decode"
+    for workload, container in _modelserver_containers(_documents(manifest)):
+        name = str(workload.get("name") or "<unnamed>")
+        role = workload["role"] if "prefill" in expected else "decode"
         tokens = _invocation_tokens(container, name)
         for argument in _UNSUPPORTED_MODEL_ARGUMENTS:
             if _option(tokens, {f"--{argument}", f"--{argument.replace('-', '_')}"}, name) is not None:

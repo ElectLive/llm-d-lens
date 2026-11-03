@@ -78,6 +78,7 @@ def test_workload_yaml_binds_gateway_api_key_when_routed():
     )
     assert parsed["server"]["api_key"] == "lens-mk-abc"
     assert parsed["server"]["base_url"] == "http://gateway:30012"
+    assert parsed["storage"]["local_storage"]["path"] == "/workspace"
 
 
 @pytest.mark.parametrize("request_type", [BenchmarkSpec, router.EvaluateRunRequest])
@@ -169,6 +170,7 @@ def test_matrix_workload_yaml_is_exact_length_and_closed_loop():
     assert parsed["data"]["input_distribution"] == {"min": 1024, "max": 1024, "mean": 1024, "std_dev": 0}
     assert parsed["data"]["output_distribution"] == {"min": 128, "max": 128, "mean": 128, "std_dev": 0}
     assert parsed["report"]["request_lifecycle"]["per_stage"] is True
+    assert parsed["storage"]["local_storage"]["path"] == "/workspace"
 
 
 def test_matrix_workload_yaml_uses_served_model_for_tokenizer():

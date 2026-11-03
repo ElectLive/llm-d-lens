@@ -43,6 +43,12 @@ file location alone does not require reading every section or linked document.
 | Login, permissions, ownership, sessions, authenticated routes | [Auth](.agents/skills/auth/SKILL.md) |
 | Explicit comprehensive review | [Repo review](.agents/skills/repo-review/SKILL.md) |
 
+Layout ([repository layout](docs/design/repository-layout.md)): `apps/lens` is
+the `lens` engine and CLI; `apps/backend` is the legacy FastAPI service being
+migrated onto it; `apps/frontend` and `packages/shared` are the frontend; `hack/`
+holds developer tooling and `deploy/` the container builds. `lens` must never
+import `llm_d_lens`, FastAPI, the database layer or auth.
+
 Keep domain rules in their domain; shared modules must not depend on pages.
 For application file lifecycle changes, read [storage layout](docs/design/storage-layout.md).
 Generated files, dependencies and runtime data are not implementation sources.
@@ -74,7 +80,7 @@ published translations under `docs/site/i18n/zh-CN/`.
 
 A FastAPI route intended for Lens Assistant or MCP must declare an explicit
 `operation_id`, `summary` and `description` on its decorator. After changing
-backend routes, run `node scripts/generate-mcp-tools.mjs --check`; it validates
+backend routes, run `node hack/generate-mcp-tools.mjs --check`; it validates
 the Python catalog and fails on any unexpected skipped operation. Add UI-only,
 internal, streaming, secret-bearing or otherwise unsuitable routes to
 `intentionalSkips` in `apps/backend/src/llm_d_lens/mcp/definitions.json`.
@@ -115,6 +121,6 @@ variables. Keep create/edit behavior consistent.
 ## Local development
 
 Use Vite hot reload. Restart only an affected service when necessary with
-`scripts/lens-local.sh restart backend|server|frontend`; use `restart all` for
+`hack/lens-local.sh restart backend|server|frontend`; use `restart all` for
 shared environment/ports or API changes requiring a new MCP catalog. Tooling and
 documentation changes do not require application startup.

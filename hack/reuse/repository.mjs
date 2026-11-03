@@ -13,6 +13,7 @@ export const SOURCE_ROOTS = [
   'server/',
   'llm_d_lens/',
   'llm_d_bench/',
+  'hack/',
   'tools/',
   'scripts/',
 ];

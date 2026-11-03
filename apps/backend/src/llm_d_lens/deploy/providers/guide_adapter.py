@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import shlex
 from dataclasses import dataclass, field
 from math import isfinite
 from typing import Any, Protocol
@@ -58,6 +60,27 @@ def set_vllm_argument(args: list[str], name: str, value: object) -> list[str]:
     else:
         result.append(f"--{name}={value}")
     return result
+
+
+def set_vllm_shell_argument(command: str, name: str, value: object) -> str:
+    """Replace a vLLM argument inside a shell command string."""
+    boolean = name in {"enable-auto-tool-choice", "enable-prefix-caching", "enforce-eager"} and str(value).lower() in {
+        "true",
+        "false",
+    }
+    pattern = (
+        rf"--(?:no-)?{re.escape(name)}(?:=(?:true|false))?(?![\w-])"
+        if boolean
+        else rf"--{re.escape(name)}(?:=|\s+)(?:\"[^\"]*\"|'[^']*'|[^\s]+)"
+    )
+    replacement = (
+        (f"--{name}" if str(value).lower() == "true" else f"--no-{name}")
+        if boolean
+        else f"--{name}={shlex.quote(str(value))}"
+    )
+    if re.search(pattern, command):
+        return re.sub(pattern, lambda _: replacement, command)
+    return f"{command.rstrip()} \\\n                {replacement}"
 
 
 @dataclass(frozen=True)

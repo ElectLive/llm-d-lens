@@ -520,3 +520,50 @@ def test_option_readers_reject_conflicting_aliases(reader_name):
 
     with pytest.raises(ValueError, match="conflicting --alias/--value options"):
         getattr(manifest_facts, reader_name)(["--value=one", "--alias", "two"], {"--value", "--alias"}, "worker")
+
+
+def test_disaggregated_set_roles_prove_pd_configuration_facts():
+    roles = []
+    for role in ("prefill", "decode"):
+        roles.append(
+            {
+                "name": role,
+                "spec": {
+                    "replicas": 2,
+                    "leaderWorkerTemplate": {
+                        "size": 1,
+                        "workerTemplate": {
+                            "metadata": {"labels": {"llm-d.ai/role": role}},
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "name": "modelserver",
+                                        "image": "registry.example/vllm:v1",
+                                        "command": ["vllm", "serve"],
+                                        "args": ["example/model", "--tensor-parallel-size=2"],
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                },
+            }
+        )
+    manifest = yaml.safe_dump(
+        {
+            "apiVersion": "disaggregatedset.x-k8s.io/v1",
+            "kind": "DisaggregatedSet",
+            "metadata": {"name": "pd-disagg"},
+            "spec": {"slices": 1, "roles": roles},
+        }
+    )
+    content = {
+        "deploymentType": "pd",
+        "model": {"name": "example/model"},
+        "prefill": {"replicaCount": 2, "tensorParallelSize": 2},
+        "decode": {"replicaCount": 2, "tensorParallelSize": 2},
+        "runtime": {"image": "registry.example/vllm:v1", "modelServer": "vllm", "modelSource": "huggingface"},
+        "officialGuide": {"source": {"guide": "pd-disaggregation"}},
+    }
+
+    validate_manifest_facts(content, manifest)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def validate_inline_workload(content: str) -> dict:
@@ -349,6 +349,16 @@ class EvaluateRunRequest(BenchmarkSpec):
             "deployment is reached through the cluster's shared Gateway. Run-only; never persisted."
         ),
     )
+
+    @field_validator("api_key")
+    @classmethod
+    def model_access_token(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        token = value.strip()
+        if not token.startswith("lens-mk-") or len(token) <= len("lens-mk-") or any(ch.isspace() for ch in token):
+            raise ValueError("api_key must be a model access token that starts with lens-mk-")
+        return token
 
 
 class EvaluateWorkflowRequest(BaseModel):

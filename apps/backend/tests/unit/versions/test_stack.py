@@ -25,4 +25,5 @@ def test_describe_reports_the_pinned_inputs():
     assert payload["llm_d_router"] == versions.stack().llm_d_router
     assert payload["gateway_providers"]["istio"]
     assert payload["llm_d_inference_payload_processor"]
+    assert payload["k8s_lws"] == versions.lws_version()
     assert "resolved" not in payload

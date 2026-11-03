@@ -60,15 +60,15 @@ helm upgrade -i eg oci://docker.io/envoyproxy/gateway-helm \
 请查看 `~/.local/state/lens/logs/dev/backend.log` 以了解实际的异常信息。
 常见原因包括：`[project.dependencies]` 变更后缺少某个 Python 依赖
 （运行 `python3 -m pip install -e '.[dev]'` 解决），或者端口已被占用——
-`scripts/lens-local.sh` 会自动选择空闲端口，并在日志中记录实际使用的端口。
+`hack/lens-local.sh` 会自动选择空闲端口，并在日志中记录实际使用的端口。
 
 ## MCP 工具目录中缺少刚刚添加的路由
 
-请重新生成它：`node scripts/generate-mcp-tools.mjs`。`scripts/lens-local.sh
-start`/`restart` 会自动执行此操作；只有绕过 `scripts/lens-local.sh` 手动重启后端
+请重新生成它：`node hack/generate-mcp-tools.mjs`。`hack/lens-local.sh
+start`/`restart` 会自动执行此操作；只有绕过 `hack/lens-local.sh` 手动重启后端
 时，才可能导致该目录信息过期。
 
-## 复用能力图谱/任务启动验证阻止了 `scripts/lens-local.sh start`
+## 复用能力图谱/任务启动验证阻止了 `hack/lens-local.sh start`
 
 复用优先工作流会在启动服务前校验能力图谱；无效的注册信息或未解决的待定
 决策会阻止启动，但不会停止已经在运行的服务。关于如何解决该问题，请参阅

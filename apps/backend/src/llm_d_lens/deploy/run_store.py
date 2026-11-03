@@ -77,6 +77,13 @@ class JsonDeploymentRunStore:
         except DeploymentDaoError as error:
             raise DeploymentRunStoreError(str(error)) from error
 
+    def update_execution_provenance(self, execution_id: str, provenance: dict) -> DeploymentExecution:
+        """Patch only provenance, preserving concurrent lifecycle state."""
+        try:
+            return self._executions.update_provenance(execution_id, provenance)
+        except DeploymentDaoError as error:
+            raise DeploymentRunStoreError(str(error)) from error
+
     def get_execution(self, execution_id: str) -> DeploymentExecution | None:
         execution = self._executions.get(execution_id)
         if execution is None:

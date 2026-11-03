@@ -9,7 +9,7 @@
 #
 # Build & push (adjust the registry/tag to match your environment, then set
 # MODEL_CACHE_DOWNLOADER_IMAGE to the pushed tag):
-#   docker build -t <registry>/model-cache-downloader:latest docker/model-cache-downloader
+#   docker build -t <registry>/model-cache-downloader:latest deploy/model-cache-downloader
 #   docker push <registry>/model-cache-downloader:latest
 
 FROM python:3.12-slim

@@ -154,11 +154,20 @@ export function derivePodStatusGroup(pods, expectedModelPods = 1) {
 // A missing model server is unavailable (red); a partially ready model server
 // is degraded (amber); a pod-level failure wins over a stale Ready record.
 // Terminal states (Cleaned) are never overridden by transient pod snapshots.
+export function expectedModelPodCount(item) {
+    const decode = Number(item?.scale?.decodeReplicas ?? item?.replicas);
+    const prefill = Number(item?.scale?.prefillReplicas);
+    const slices = Number(item?.scale?.slices) || 1;
+    const total = (Number.isFinite(decode) ? Math.max(0, decode) : 0)
+        + (Number.isFinite(prefill) ? Math.max(0, prefill) : 0);
+    return Math.max(1, slices * total);
+}
+
 export function effectiveStatusGroup(item, pods) {
     const backendGroup = statusGroup(item?.status);
     if (backendGroup === 'Cleaned') return backendGroup;
     if (Array.isArray(pods) && pods.length === 0 && backendGroup === 'Ready') return 'Failed';
-    const podGroup = derivePodStatusGroup(pods, item?.replicas || 1);
+    const podGroup = derivePodStatusGroup(pods, expectedModelPodCount(item));
     if (!podGroup) return backendGroup;
     if (podGroup === 'Failed') return 'Failed';
     if (podGroup === 'In progress' && backendGroup === 'Ready') return 'Degraded';
@@ -188,10 +197,6 @@ export function deploymentKind(item) {
 
 export function deploymentEndpoint(item) {
     return item?.forwarded_endpoint || item?.endpoint || '';
-}
-
-export function deploymentInternalEndpoint(item) {
-    return item?.endpoint || '';
 }
 
 export function deploymentLocalEndpoint(item) {

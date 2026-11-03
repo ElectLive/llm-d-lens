@@ -19,7 +19,7 @@ flowchart LR
 
 Deploy is part of the Lens Python backend, not a separate llm-d-bench API.
 Deployment routes run in the same process; no separate BFF upstream is required.
-Use `scripts/lens-local.sh start` for local development; see
+Use `hack/lens-local.sh start` for local development; see
 [Installation](/installation) and [Environment variables](/environment-variables)
 for current startup and storage settings rather than host-specific `/root/...`
 paths. Requests require an authenticated Lens session and the relevant permission;

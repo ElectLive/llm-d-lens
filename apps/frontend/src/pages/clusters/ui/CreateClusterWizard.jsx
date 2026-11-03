@@ -1,15 +1,15 @@
-import { applyClusterCrds, downloadClusterSoftware, listLensHosts, loadClusterCrds, loadClusterKubernetesVersion, loadStackVersions, startClusterImagePrepull, waitForClusterImagePrepull } from '../../optimization';
+import { applyClusterCrds, downloadClusterSoftware, installClusterLws, listLensHosts, loadClusterCrds, loadClusterKubernetesVersion, loadClusterLws, loadStackVersions, startClusterImagePrepull, waitForClusterImagePrepull } from '../../optimization';
 import { requestJson } from '../../../shared/api/httpClient';
 // Multi-step "Create Cluster" wizard.
 //
 // See docs/design/cluster-design.md#cluster-creation-wizard for the full design.
 // Step 1 creates the cluster immediately (so Step 2-4 have a real
 // `cluster_id` to attach kubeconfig-backed operations to); Step 2/3 PATCH
-// the cluster's proxy/version-pin settings; Step 4 (optional) prewarms a
-// Model Cache entry by: creating a standalone HF_TOKEN secret, creating or
-// selecting a Storage volume, then creating a Model Cache entry that
-// references that secret via the existing `existing-secret` token source
-// (no new token source mode -- see section 4.4 of the design doc).
+// the cluster's proxy/version-pin settings; Step 4 creates a standalone
+// HF_TOKEN secret and a required Storage volume, then optionally prewarms a
+// Model Cache entry that references that secret via the existing
+// `existing-secret` token source (no new token source mode -- see section 4.4
+// of the design doc).
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     AlertTriangle,
@@ -20,6 +20,8 @@ import {
     Cpu,
     Database,
     Globe,
+    KeyRound,
+    ListChecks,
     Loader2,
     Rocket,
     Server,
@@ -27,7 +29,9 @@ import {
     Upload,
     Waypoints,
 } from 'lucide-react';
-import { Badge, Button, Checkbox, Input, Label, Modal, Select, Textarea } from '../../../shared/ui';
+import { Badge, Button, Checkbox, Input, Label, Modal, Panel, SectionLabel, Select, StatusChip, Textarea } from '../../../shared/ui';
+import { HelpTooltip } from '../../../shared/ui/FormControls';
+import { cn } from '../../../shared/lib/cn';
 import {
     createStorageVolume,
     getStorageVolume,
@@ -52,6 +56,37 @@ const STEPS = [
 ];
 
 const ACCESS_MODE_LABEL = { dra: 'DRA (Dynamic Resource Allocation)', plugin: 'Device plugin' };
+const ACCESS_MODE_SHORT = { dra: 'DRA', plugin: 'Device plugin' };
+const GATEWAY_PROVIDER_LABEL = {
+    istio: 'Istio',
+    gke: 'GKE Gateway',
+    agentgateway: 'Agentgateway',
+    'envoy-ai-gateway': 'Envoy AI Gateway',
+};
+const STORAGE_KIND_LABEL = { 'local-disk': 'hostPath', nfs: 'NFS' };
+
+function ReviewRow({ label, children, mono = false }) {
+    return (
+        <div className="grid grid-cols-[7.5rem_minmax(0,1fr)] items-baseline gap-3 py-2">
+            <dt className="text-[11px] font-medium text-theme-muted">{label}</dt>
+            <dd className={cn(
+                'min-w-0 break-words text-xs text-theme-text',
+                mono && 'break-all font-mono text-[11px] text-theme-muted',
+            )}>
+                {children}
+            </dd>
+        </div>
+    );
+}
+
+function PanelHeading({ icon, children }) {
+    return (
+        <span className="flex items-center gap-2">
+            <span className="text-sky-600 dark:text-sky-400">{icon}</span>
+            {children}
+        </span>
+    );
+}
 
 const ACCELERATOR_VENDORS = [
     { id: 'intel', label: 'Intel GPU', disabled: false, accessModes: ['dra', 'plugin'] },
@@ -155,6 +190,8 @@ export function CreateClusterWizard({ onClose, onCreated }) {
     const [imagePullStatus, setImagePullStatus] = useState(null); // { state, ready, desired, nodes, images }
     // Gateway API / Gateway API Inference Extension CRD presence on the cluster.
     const [crdStatus, setCrdStatus] = useState(null); // { gateway_api, gateway_api_inference_extension }
+    // LeaderWorkerSet controller + DisaggregatedSet API used by the P/D Guide.
+    const [lwsStatus, setLwsStatus] = useState(null); // { ready, crd, controller, version, message }
     // Reachability + Kubernetes-version check after the kubeconfig upload.
     const [k8sCheck, setK8sCheck] = useState(null); // { reachable, version, min_k8s_version, supported }
 
@@ -204,13 +241,18 @@ export function CreateClusterWizard({ onClose, onCreated }) {
         return () => controller.abort();
     }, []);
 
-    // Refresh the pinned Gateway API / GIE CRD status when the stack step opens.
+    // Refresh the pinned cluster prerequisites when the stack step opens.
     useEffect(() => {
         if (stepIndex !== 4 || !cluster) return undefined;
         const controller = new AbortController();
         loadClusterCrds(cluster.id)
             .then((payload) => {
                 if (!controller.signal.aborted) setCrdStatus(payload);
+            })
+            .catch(() => {});
+        loadClusterLws(cluster.id)
+            .then((payload) => {
+                if (!controller.signal.aborted) setLwsStatus(payload);
             })
             .catch(() => {});
         return () => controller.abort();
@@ -283,8 +325,7 @@ export function CreateClusterWizard({ onClose, onCreated }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [stepIndex, cluster, acceleratorPairs]);
 
-    // Step 5: model cache (optional)
-    const [modelCacheEnabled, setModelCacheEnabled] = useState(false);
+    // Step 5: model cache storage (required) and prewarm (optional)
     const [prewarmEnabled, setPrewarmEnabled] = useState(false);
     const [secretNamespace, setSecretNamespace] = useState('llm-d-bench-storage');
     const [secretNamespaceTouched, setSecretNamespaceTouched] = useState(false);
@@ -355,7 +396,7 @@ export function CreateClusterWizard({ onClose, onCreated }) {
     }, [cluster?.id, secretNamespaceTouched]);
 
     useEffect(() => {
-        if (stepIndex !== 4 || !modelCacheEnabled || !cluster || storageKind !== 'local-disk') return undefined;
+        if (stepIndex !== 4 || !cluster || storageKind !== 'local-disk') return undefined;
         const controller = new AbortController();
         (async () => {
             try {
@@ -366,8 +407,7 @@ export function CreateClusterWizard({ onClose, onCreated }) {
             }
         })();
         return () => controller.abort();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [stepIndex, modelCacheEnabled, storageKind, cluster]);
+    }, [stepIndex, storageKind, cluster]);
 
     const basicsValid = name.trim().length > 0 && !!file;
     const proxyValid = proxyMode === 'auto' || Boolean(httpProxy.trim() || httpsProxy.trim() || noProxy.trim());
@@ -382,12 +422,11 @@ export function CreateClusterWizard({ onClose, onCreated }) {
     // gated models without the user re-entering a token every time.
     const hfTokenSecretValid = Boolean(secretNamespace.trim() && secretName.trim() && hfToken.trim());
     const modelCacheValid =
-        !modelCacheEnabled ||
-        (modelCacheStorageSpecValid &&
-            CAPACITY_PATTERN.test(storageCapacity.trim()) &&
-            (!prewarmEnabled ||
-                (REPO_ID_PATTERN.test(repoId.trim()) &&
-                    revision.trim())));
+        modelCacheStorageSpecValid &&
+        CAPACITY_PATTERN.test(storageCapacity.trim()) &&
+        (!prewarmEnabled ||
+            (REPO_ID_PATTERN.test(repoId.trim()) &&
+                revision.trim()));
 
     const goNext = async () => {
         setError('');
@@ -507,6 +546,15 @@ export function CreateClusterWizard({ onClose, onCreated }) {
                 if (!crds.gateway_api?.ok || !crds.gateway_api_inference_extension?.ok) {
                     return;
                 }
+                // Install the pinned LeaderWorkerSet controller; llm-d v1.0 P/D
+                // Guides create DisaggregatedSet resources through it.
+                setLwsStatus({ installing: true, ready: false, message: '' });
+                const lws = await installClusterLws(nextCluster.id);
+                setLwsStatus(lws);
+                if (!lws.ok) {
+                    setError(lws.message || 'LeaderWorkerSet installation failed');
+                    return;
+                }
                 setStepIndex(5);
             } catch (nextError) {
                 setError(nextError.message);
@@ -562,34 +610,14 @@ export function CreateClusterWizard({ onClose, onCreated }) {
         if (finishing || finished) return;
         setFinishing(true);
         setError('');
-        if (!modelCacheEnabled) {
-            const finalCluster = await finalizeDraftCluster();
-            setFinishStatus([]);
-            setFinished(true);
-            setFinishing(false);
-            onCreated?.(finalCluster);
-            return;
-        }
         const steps = [
-            ...(modelCacheEnabled
-                ? [
-                    { key: 'storage', label: 'Create storage volume', state: 'pending' },
-                    ...(prewarmEnabled ? [{ key: 'model-cache', label: 'Start model cache download', state: 'pending' }] : []),
-                ]
-                : []),
+            { key: 'storage', label: 'Create storage volume', state: 'pending' },
+            ...(prewarmEnabled ? [{ key: 'model-cache', label: 'Start model cache download', state: 'pending' }] : []),
         ];
         setFinishStatus(steps);
         const setStepState = (key, state, detail) =>
             setFinishStatus((current) => current.map((item) => (item.key === key ? { ...item, state, detail } : item)));
         try {
-            if (!modelCacheEnabled) {
-                const finalCluster = await finalizeDraftCluster();
-                setFinished(true);
-                setFinishing(false);
-                onCreated?.(finalCluster);
-                return;
-            }
-
             let volumeId;
             {
                 setStepState('storage', 'running');
@@ -935,8 +963,9 @@ export function CreateClusterWizard({ onClose, onCreated }) {
                 <div className="space-y-4">
                     <p className="text-xs text-theme-muted">
                         These versions are fixed by this Lens release. Clicking Next downloads the llm-d and
-                        llm-d-benchmark sources and pre-pulls the router/model-server images for the accelerators you
-                        selected; the other components install during cluster setup.
+                        llm-d-benchmark sources, pre-pulls the router/model-server images for the accelerators you
+                        selected, and installs the Gateway CRDs plus the LeaderWorkerSet (LWS) controller, which provides the
+                        DisaggregatedSet API required by llm-d v1.0 P/D deployments.
                     </p>
                     <div className="rounded-lg border border-slate-700/70 bg-slate-800/40 px-4 py-3">
                     {(() => {
@@ -950,64 +979,115 @@ export function CreateClusterWizard({ onClose, onCreated }) {
                         const selectedIds = selectedAcceleratorIds.map((id) => String(id).toLowerCase());
                         const showNvidia = selectedIds.some((id) => id.includes('nvidia') || id.includes('cuda'));
                         const showIntel = selectedIds.some((id) => id.includes('intel') || id.includes('xpu'));
-                        const rows = [
-                            { label: 'llm-d', value: stackVersions?.llm_d, download: 'llmD' },
-                            { label: 'llm-d-router (chart / EPP / P/D sidecar)', value: stackVersions?.llm_d_router, imageMatch: 'llm-d-router' },
-                            { label: 'llm-d-benchmark', value: stackVersions?.llm_d_lensmark, download: 'llmDBenchmark' },
-                            { label: 'Inference Payload Processor', value: stackVersions?.llm_d_inference_payload_processor, imageMatch: 'llm-d-inference-payload-processor' },
-                            { label: 'Kubernetes Gateway API', value: stackVersions?.k8s_gateway_api, crd: 'gateway_api' },
-                            { label: 'Gateway API Inference Extension', value: stackVersions?.k8s_gateway_api_inference_extension, crd: 'gateway_api_inference_extension' },
-                            { label: `Gateway provider — ${providerLabel}`, value: providerVersion, imageMatch: providerImageMatch },
-                            ...(showNvidia ? [{ label: 'Model server image — NVIDIA', value: modelServerImages.nvidia, imageMatch: modelServerImages.nvidia }] : []),
-                            ...(showIntel ? [{ label: 'Model server image — Intel', value: modelServerImages.intel, imageMatch: modelServerImages.intel }] : []),
+                        const groups = [
+                            {
+                                title: 'llm-d ecosystem',
+                                rows: [
+                                    { label: 'llm-d', value: stackVersions?.llm_d, download: 'llmD' },
+                                    { label: 'llm-d-router (chart / EPP / P/D sidecar)', value: stackVersions?.llm_d_router, imageMatch: 'llm-d-router' },
+                                    { label: 'llm-d-benchmark', value: stackVersions?.llm_d_lensmark, download: 'llmDBenchmark' },
+                                    { label: 'Inference Payload Processor', value: stackVersions?.llm_d_inference_payload_processor, imageMatch: 'llm-d-inference-payload-processor' },
+                                ],
+                            },
+                            {
+                                title: 'Cluster prerequisites',
+                                rows: [
+                                    { label: 'Kubernetes Gateway API', value: stackVersions?.k8s_gateway_api, crd: 'gateway_api' },
+                                    { label: 'Gateway API Inference Extension', value: stackVersions?.k8s_gateway_api_inference_extension, crd: 'gateway_api_inference_extension' },
+                                    {
+                                        label: 'LeaderWorkerSet (LWS) controller',
+                                        value: stackVersions?.k8s_lws,
+                                        lws: true,
+                                        help: 'Lens installs the Kubernetes SIGs LeaderWorkerSet controller during cluster creation. It provides the DisaggregatedSet API used by llm-d P/D deployments and runs in the lws-system namespace.',
+                                    },
+                                ],
+                            },
+                            {
+                                title: 'Gateway',
+                                rows: [
+                                    { label: `Provider — ${providerLabel}`, value: providerVersion, imageMatch: providerImageMatch },
+                                ],
+                            },
+                            {
+                                title: 'Model server images',
+                                rows: [
+                                    ...(showNvidia ? [{ label: 'NVIDIA', value: modelServerImages.nvidia, imageMatch: modelServerImages.nvidia }] : []),
+                                    ...(showIntel ? [{ label: 'Intel', value: modelServerImages.intel, imageMatch: modelServerImages.intel }] : []),
+                                    ...(!showNvidia && !showIntel ? [{ label: 'Selected accelerators', value: 'None selected' }] : []),
+                                ],
+                            },
                         ];
                         return (
-                            <dl className="space-y-2 text-xs">
-                                {rows.map((row) => {
-                                    let state = null;
-                                    let message = null;
-                                    if (row.download) {
-                                        if (versionsDownloading || versionsDownloadStatus?.[row.download]) {
-                                            state = versionsDownloadStatus?.[row.download]?.state || 'starting';
-                                        }
-                                    } else if (row.imageMatch) {
-                                        const entries = (imagePullStatus?.images || []).filter((entry) => entry.name.includes(row.imageMatch));
-                                        if (entries.length) {
-                                            const failed = entries.find((entry) => entry.state === 'failed');
-                                            state = failed ? 'failed' : entries.every((entry) => entry.state === 'ready') ? 'ready' : 'pulling';
-                                            message = failed?.message || null;
-                                        } else if (imagePulling) {
-                                            state = 'pulling';
-                                        }
-                                    } else if (row.crd) {
-                                        const value = crdStatus?.[row.crd];
-                                        if (value) state = value === 'ready' ? 'ready' : 'missing';
-                                    }
-                                    return (
-                                        <div key={row.label} className="flex gap-3">
-                                            <dt className="w-72 shrink-0 text-theme-muted">{row.label}</dt>
-                                            <dd className="flex min-w-0 flex-1 items-center gap-2 text-theme-text">
-                                                <span className="min-w-0 flex-1 break-words">{row.value || '—'}</span>
-                                                {message && (
-                                                    <span className="max-w-[40ch] truncate text-[10px] text-rose-300" title={message}>{message}</span>
-                                                )}
-                                                {state && (
-                                                    <span className="flex shrink-0 items-center gap-1 text-theme-muted" title={message || undefined}>
-                                                        {state === 'ready' ? (
-                                                            <Check size={13} className="text-emerald-400" />
-                                                        ) : state === 'failed' || state === 'missing' ? (
-                                                            <AlertTriangle size={13} className="text-rose-400" />
-                                                        ) : (
-                                                            <Loader2 size={13} className="animate-spin" />
-                                                        )}
-                                                        <span>{state}</span>
-                                                    </span>
-                                                )}
-                                            </dd>
-                                        </div>
-                                    );
-                                })}
-                            </dl>
+                            <div className="divide-y divide-theme-border">
+                                {groups.map((group) => (
+                                    <section key={group.title} className="py-3 first:pt-0 last:pb-0">
+                                        <SectionLabel tone="blue" uppercase={false} className="text-[11px] font-semibold">{group.title}</SectionLabel>
+                                        <dl className="space-y-2 text-xs">
+                                            {group.rows.map((row) => {
+                                                let state = null;
+                                                let message = null;
+                                                if (row.download) {
+                                                    if (versionsDownloading || versionsDownloadStatus?.[row.download]) {
+                                                        state = versionsDownloadStatus?.[row.download]?.state || 'starting';
+                                                    }
+                                                } else if (row.imageMatch) {
+                                                    const entries = (imagePullStatus?.images || []).filter((entry) => entry.name.includes(row.imageMatch));
+                                                    if (entries.length) {
+                                                        const failed = entries.find((entry) => entry.state === 'failed');
+                                                        state = failed ? 'failed' : entries.every((entry) => entry.state === 'ready') ? 'ready' : 'pulling';
+                                                        message = failed?.message || null;
+                                                    } else if (imagePulling) {
+                                                        state = 'pulling';
+                                                    }
+                                                } else if (row.crd) {
+                                                    const value = crdStatus?.[row.crd];
+                                                    if (value) state = value === 'ready' ? 'ready' : 'missing';
+                                                } else if (row.lws) {
+                                                    if (lwsStatus) {
+                                                        state = lwsStatus.installing ? 'installing' : lwsStatus.ready ? 'ready' : 'missing';
+                                                        message = lwsStatus.installing ? null : lwsStatus.message || null;
+                                                    }
+                                                }
+                                                return (
+                                                    <div key={row.label} className="flex gap-3">
+                                                        <dt className="flex w-72 shrink-0 items-center gap-1.5 text-theme-muted">
+                                                            <span>{row.label}</span>
+                                                            {row.help && (
+                                                                <HelpTooltip
+                                                                    label={`${row.label} help`}
+                                                                    className="relative shrink-0"
+                                                                    iconSize={12}
+                                                                    tooltipClassName="left-0 top-full w-72 pt-1"
+                                                                >
+                                                                    {row.help}
+                                                                </HelpTooltip>
+                                                            )}
+                                                        </dt>
+                                                        <dd className="flex min-w-0 flex-1 items-center gap-2 text-theme-text">
+                                                            <span className="min-w-0 flex-1 break-words">{row.value || '—'}</span>
+                                                            {message && (
+                                                                <span className="max-w-[40ch] truncate text-[10px] text-rose-300" title={message}>{message}</span>
+                                                            )}
+                                                            {state && (
+                                                                <span className="flex shrink-0 items-center gap-1 text-theme-muted" title={message || undefined}>
+                                                                    {state === 'ready' ? (
+                                                                        <Check size={13} className="text-emerald-400" />
+                                                                    ) : state === 'failed' || state === 'missing' ? (
+                                                                        <AlertTriangle size={13} className="text-rose-400" />
+                                                                    ) : (
+                                                                        <Loader2 size={13} className="animate-spin" />
+                                                                    )}
+                                                                    <span>{state}</span>
+                                                                </span>
+                                                            )}
+                                                        </dd>
+                                                    </div>
+                                                );
+                                            })}
+                                        </dl>
+                                    </section>
+                                ))}
+                            </div>
                         );
                     })()}
                     </div>
@@ -1124,9 +1204,9 @@ export function CreateClusterWizard({ onClose, onCreated }) {
                     <div className="rounded-lg border border-slate-700/70 bg-slate-800/40 px-4 py-4">
                         <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">HF_TOKEN secret</p>
                         <p className="mb-3 text-[11px] leading-relaxed text-slate-400">
-                            Always required, independent of Model Cache below -- Deploy/Evaluate default to reusing
-                            this secret on this cluster so gated models can be pulled without asking for a token again.
-                            Created as soon as you click Next.
+                            Required for every cluster -- Deploy/Evaluate default to reusing this secret on this
+                            cluster so gated models can be pulled without asking for a token again. Created as soon
+                            as you click Next.
                         </p>
                         <div className="space-y-4">
                             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -1150,21 +1230,15 @@ export function CreateClusterWizard({ onClose, onCreated }) {
                             )}
                         </div>
                     </div>
-                    <Checkbox
-                        id="wizard-model-cache-enabled"
-                        checked={modelCacheEnabled}
-                        onChange={(event) => setModelCacheEnabled(event.target.checked)}
-                        label="Create a storage volume for model-cache on this cluster"
-                    />
-                    {modelCacheEnabled && (
-                        <div className="space-y-4 rounded-lg border border-slate-700/70 bg-slate-800/40 px-4 py-4">
-                            <div className="space-y-3">
-                                <Label>Storage volume</Label>
-                                <p className="text-[11px] leading-relaxed text-slate-400">
-                                    Same fields as the Storage page's manual "New storage volume" form -- there are
-                                    no default values, fill in everything below yourself.
-                                </p>
-                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div className="space-y-4 rounded-lg border border-slate-700/70 bg-slate-800/40 px-4 py-4">
+                        <div className="space-y-3">
+                            <Label>Storage volume (required)</Label>
+                            <p className="text-[11px] leading-relaxed text-slate-400">
+                                A storage volume is created for every cluster using the same fields as the Storage
+                                page's manual "New storage volume" form -- there are no default values, fill in
+                                everything below yourself.
+                            </p>
+                            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                     <div>
                                         <Label htmlFor="wizard-storage-kind">Type</Label>
                                         <Select id="wizard-storage-kind" value={storageKind} onChange={(event) => setStorageKind(event.target.value)}>
@@ -1231,59 +1305,222 @@ export function CreateClusterWizard({ onClose, onCreated }) {
                                 )}
                             </div>
                         </div>
-                    )}
-                </div>
+                    </div>
                 </section>
             )}
 
             {stepIndex === 6 && (
-                <section aria-labelledby="wizard-confirm-heading">
-                    <h2 id="wizard-confirm-heading" className="mb-4 flex items-center gap-2 text-lg font-semibold text-slate-100">
-                        <Rocket className="h-5 w-5 text-sky-400" /> Confirm
-                    </h2>
-                <div className="space-y-4">
-                    <div className="rounded-lg border border-slate-700/70 bg-slate-800/40 px-4 py-3 text-sm">
-                        <div className="font-semibold text-theme-text">{cluster?.name}</div>
-                        <div className="mt-1 text-xs text-theme-muted">
-                            Proxy: {proxyMode === 'custom' ? 'custom' : 'auto (falls back to backend env for now)'} &middot;
-                            {' '}Model gateway: {gatewayProvider} &middot;
-                            {' '}llm-d: {stackVersions?.llm_d || cluster?.llmDRef || 'pinned'}{cluster?.llmDRepoPath ? ` (downloaded to ${cluster.llmDRepoPath})` : ''}
-                            {' '}&middot; llm-d-benchmark: {stackVersions?.llm_d_lensmark || cluster?.llmDBenchmarkRef || 'pinned'}{cluster?.llmDBenchmarkRepoPath ? ` (downloaded to ${cluster.llmDBenchmarkRepoPath})` : ''}
+                <section aria-labelledby="wizard-confirm-heading" className="space-y-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                            <h2 id="wizard-confirm-heading" className="flex items-center gap-2 text-lg font-semibold text-slate-100">
+                                <Rocket className="h-5 w-5 text-sky-400" /> Confirm
+                            </h2>
+                            <p className="mt-1 text-sm text-theme-muted">
+                                Review the configuration. Back returns to any step; Finish applies it.
+                            </p>
                         </div>
-                        <div className="mt-1 text-xs text-theme-muted">
-                            Accelerator: {acceleratorPairs.length
-                                ? acceleratorPairs.map((pair) => `${pair.label} · ${ACCESS_MODE_LABEL[pair.mode]}`).join(', ')
-                                : 'skipped'}
-                        </div>
-                        <div className="mt-1 text-xs text-theme-muted">
-                            HF_TOKEN secret: {secretRef ? `${secretRef.namespace}/${secretRef.name}` : 'not created'}
-                        </div>
-                        <div className="mt-1 text-xs text-theme-muted">
-                            Model cache: {modelCacheEnabled
-                                ? (prewarmEnabled ? `storage + prewarm ${repoId.trim()}@${revision.trim()}` : 'storage volume (no prewarm)')
-                                : 'skipped'}
-                        </div>
+                        <Badge tone={finished ? 'success' : 'info'} size="sm">
+                            {finished ? 'Complete' : 'Ready to create'}
+                        </Badge>
                     </div>
-                    {finishStatus.length > 0 && (
-                        <ul className="space-y-1.5">
-                            {finishStatus.map((item) => (
-                                <li key={item.key} className="flex items-center gap-2 text-sm">
-                                    {item.state === 'running' && <Loader2 size={14} className="animate-spin text-sky-400" />}
-                                    {item.state === 'done' && <Check size={14} className="text-emerald-400" />}
-                                    {item.state === 'failed' && <span className="text-rose-400">&#10007;</span>}
-                                    {item.state === 'pending' && <span className="h-2 w-2 rounded-full bg-slate-600" />}
-                                    <span className={item.state === 'failed' ? 'text-rose-300' : 'text-theme-text'}>{item.label}</span>
-                                    {item.detail && <span className="text-xs text-rose-300">— {item.detail}</span>}
-                                </li>
-                            ))}
-                        </ul>
+
+                    <Panel padding="sm" tone="soft" className="shadow-none">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="flex min-w-0 items-start gap-3">
+                                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-sky-500/20 bg-sky-500/10 text-sky-600 dark:text-sky-400">
+                                    <Server size={17} aria-hidden="true" />
+                                </span>
+                                <div className="min-w-0">
+                                    <p className="truncate text-base font-semibold text-theme-text">
+                                        {cluster?.name || name || 'New cluster'}
+                                    </p>
+                                    <p className="mt-0.5 text-xs text-theme-muted">
+                                        {description.trim() || cluster?.description || 'No description'}
+                                    </p>
+                                    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-theme-muted">
+                                        <span className="inline-flex items-center gap-1.5">
+                                            <Upload size={12} aria-hidden="true" />
+                                            {file?.name || 'Kubeconfig uploaded'}
+                                        </span>
+                                        {k8sCheck?.version && (
+                                            <span className="inline-flex items-center gap-1.5">
+                                                <CheckCircle2 size={12} className="text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                                                Kubernetes {k8sCheck.version}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </Panel>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                        <Panel padding="sm" className="h-full shadow-none" title={<PanelHeading icon={<Globe size={14} />}>Network proxy</PanelHeading>}>
+                            <dl className="divide-y divide-theme-border">
+                                <ReviewRow label="Mode">
+                                    {proxyMode === 'custom' ? 'Custom proxy' : 'Auto-detect'}
+                                </ReviewRow>
+                                {proxyMode === 'custom' ? (
+                                    <>
+                                        <ReviewRow label="HTTP" mono>{httpProxy.trim() || 'Not set'}</ReviewRow>
+                                        <ReviewRow label="HTTPS" mono>{httpsProxy.trim() || 'Not set'}</ReviewRow>
+                                        <ReviewRow label="NO_PROXY" mono>{noProxy.trim() || 'Not set'}</ReviewRow>
+                                    </>
+                                ) : (
+                                    <ReviewRow label="Source">Lens backend environment</ReviewRow>
+                                )}
+                            </dl>
+                        </Panel>
+
+                        <Panel padding="sm" className="h-full shadow-none" title={<PanelHeading icon={<Waypoints size={14} />}>Model gateway</PanelHeading>}>
+                            <dl className="divide-y divide-theme-border">
+                                <ReviewRow label="Provider">
+                                    {GATEWAY_PROVIDER_LABEL[gatewayProvider] || gatewayProvider}
+                                </ReviewRow>
+                                <ReviewRow label="NodePort">{gatewayPort.trim() || 'Assigned automatically'}</ReviewRow>
+                                <ReviewRow label="Host / IP">{gatewayPublicUrl.trim() || 'Derived automatically'}</ReviewRow>
+                                <ReviewRow label="Lens address">
+                                    {gatewayProvider === 'gke' ? 'Not used' : gatewayAuthzHost.trim() || 'Auto-filled'}
+                                </ReviewRow>
+                                <ReviewRow label="Inotify limit" mono>{inotifyMaxUserInstances.trim() || '8192'}</ReviewRow>
+                            </dl>
+                        </Panel>
+
+                        <Panel
+                            padding="sm"
+                            className="h-full shadow-none"
+                            title={<PanelHeading icon={<Cpu size={14} />}>Accelerators</PanelHeading>}
+                            actions={(
+                                <Badge tone={acceleratorPairs.length ? 'info' : 'neutral'} size="xs">
+                                    {acceleratorPairs.length ? `${acceleratorPairs.length} selected` : 'Skipped'}
+                                </Badge>
+                            )}
+                        >
+                            {acceleratorPairs.length ? (
+                                <ul className="space-y-2">
+                                    {acceleratorPairs.map((pair) => (
+                                        <li key={pair.key} className="rounded-lg border border-theme-border bg-theme-bg/50 px-3 py-2">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <span className="min-w-0 truncate text-xs font-medium text-theme-text">{pair.label}</span>
+                                                <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-300">
+                                                    {ACCESS_MODE_SHORT[pair.mode] || pair.mode}
+                                                </span>
+                                            </div>
+                                            {modelServerImages[pair.vendorId] && (
+                                                <p className="mt-1 break-all font-mono text-[10px] text-theme-muted">
+                                                    {modelServerImages[pair.vendorId]}
+                                                </p>
+                                            )}
+                                        </li>
+                                    ))}
+                                </ul>
+                            ) : (
+                                <p className="text-xs text-theme-muted">No accelerator drivers or device plugins will be installed.</p>
+                            )}
+                        </Panel>
+
+                        <Panel padding="sm" className="h-full shadow-none" title={<PanelHeading icon={<Tag size={14} />}>llm-d stack</PanelHeading>}>
+                            <dl className="divide-y divide-theme-border">
+                                <ReviewRow label="llm-d" mono>{stackVersions?.llm_d || cluster?.llmDRef || 'Pinned'}</ReviewRow>
+                                <ReviewRow label="Router" mono>{stackVersions?.llm_d_router || 'Pinned'}</ReviewRow>
+                                <ReviewRow label="Benchmark" mono>{stackVersions?.llm_d_lensmark || cluster?.llmDBenchmarkRef || 'Pinned'}</ReviewRow>
+                                <ReviewRow label="Payload processor" mono>{stackVersions?.llm_d_inference_payload_processor || 'Pinned'}</ReviewRow>
+                                <ReviewRow label="Gateway API" mono>
+                                    {stackVersions?.k8s_gateway_api
+                                        ? `${stackVersions.k8s_gateway_api} / ${stackVersions.k8s_gateway_api_inference_extension || '—'}`
+                                        : 'Pinned'}
+                                </ReviewRow>
+                                <ReviewRow label="LeaderWorkerSet" mono>{stackVersions?.k8s_lws || 'Pinned'}</ReviewRow>
+                                <ReviewRow label="CRDs">
+                                    {crdStatus ? (
+                                        <StatusChip
+                                            status={crdStatus.gateway_api === 'ready' && crdStatus.gateway_api_inference_extension === 'ready' ? 'ready' : 'missing'}
+                                            size="xs"
+                                        />
+                                    ) : (
+                                        <span className="text-theme-muted">Checking…</span>
+                                    )}
+                                </ReviewRow>
+                                {cluster?.llmDRepoPath && (
+                                    <ReviewRow label="llm-d source" mono>{cluster.llmDRepoPath}</ReviewRow>
+                                )}
+                                {cluster?.llmDBenchmarkRepoPath && (
+                                    <ReviewRow label="Benchmark source" mono>{cluster.llmDBenchmarkRepoPath}</ReviewRow>
+                                )}
+                            </dl>
+                        </Panel>
+
+                        <Panel padding="sm" className="h-full shadow-none" title={<PanelHeading icon={<KeyRound size={14} />}>HF_TOKEN secret</PanelHeading>}>
+                            <dl className="divide-y divide-theme-border">
+                                <ReviewRow label="Namespace" mono>{secretRef?.namespace || secretNamespace.trim() || '—'}</ReviewRow>
+                                <ReviewRow label="Name" mono>{secretRef?.name || secretName.trim() || '—'}</ReviewRow>
+                                <ReviewRow label="Status">
+                                    <StatusChip status={secretRef ? 'ready' : 'missing'} size="xs" />
+                                </ReviewRow>
+                            </dl>
+                        </Panel>
+
+                        <Panel
+                            padding="sm"
+                            className="h-full shadow-none"
+                            title={<PanelHeading icon={<Database size={14} />}>Model cache</PanelHeading>}
+                            actions={<Badge tone="info" size="xs">Required</Badge>}
+                        >
+                            <dl className="divide-y divide-theme-border">
+                                <ReviewRow label="Type">{STORAGE_KIND_LABEL[storageKind] || storageKind}</ReviewRow>
+                                <ReviewRow label="Capacity" mono>{storageCapacity.trim() || '—'}</ReviewRow>
+                                <ReviewRow label="Volume name" mono>{storageName.trim() || 'Auto-named'}</ReviewRow>
+                                <ReviewRow label="Location" mono>
+                                    {storageKind === 'local-disk'
+                                        ? hostPath.trim() || '—'
+                                        : `${nfsServer.trim() || '—'}:${nfsPath.trim() || '—'}`}
+                                </ReviewRow>
+                                <ReviewRow label="Prewarm" mono>
+                                    {prewarmEnabled ? `${repoId.trim()}@${revision.trim()}` : 'No prewarm'}
+                                </ReviewRow>
+                            </dl>
+                        </Panel>
+                    </div>
+
+                    {(finishStatus.length > 0 || finished) && (
+                        <Panel
+                            padding="sm"
+                            className="shadow-none"
+                            title={<PanelHeading icon={<ListChecks size={14} />}>Setup progress</PanelHeading>}
+                            actions={finished ? <Badge tone="success" size="xs">Complete</Badge> : null}
+                        >
+                            <div role="status" aria-live="polite">
+                                {finishStatus.length > 0 && (
+                                    <ul className="divide-y divide-theme-border">
+                                        {finishStatus.map((item) => (
+                                            <li key={item.key} className="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
+                                                <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
+                                                    {item.state === 'running' && <Loader2 size={14} className="animate-spin text-sky-600 dark:text-sky-400" aria-hidden="true" />}
+                                                    {item.state === 'done' && <Check size={14} className="text-emerald-600 dark:text-emerald-400" aria-hidden="true" />}
+                                                    {item.state === 'failed' && <span className="text-rose-600 dark:text-rose-400" aria-hidden="true">&#10007;</span>}
+                                                    {item.state === 'pending' && <span className="h-2 w-2 rounded-full bg-slate-600" aria-hidden="true" />}
+                                                </span>
+                                                <div className="min-w-0 flex-1">
+                                                    <p className={cn('text-xs font-medium', item.state === 'failed' ? 'text-rose-600 dark:text-rose-300' : 'text-theme-text')}>
+                                                        {item.label}
+                                                    </p>
+                                                    {item.detail && (
+                                                        <p className="mt-0.5 break-words text-[11px] text-rose-600 dark:text-rose-300">{item.detail}</p>
+                                                    )}
+                                                </div>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+                                {finished && (
+                                    <p className="flex items-center gap-2 border-t border-theme-border pt-3 text-sm text-emerald-600 first:border-0 first:pt-0 dark:text-emerald-400">
+                                        <CheckCircle2 className="h-4 w-4" aria-hidden="true" /> Cluster setup complete.
+                                    </p>
+                                )}
+                            </div>
+                        </Panel>
                     )}
-                    {finished && (
-                        <p className="flex items-center gap-2 text-sm text-emerald-400">
-                            <CheckCircle2 className="h-4 w-4" /> Cluster setup complete.
-                        </p>
-                    )}
-                </div>
                 </section>
             )}
             </div>

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { derivePodStatusGroup, effectiveStatusGroup, effectiveStatusLabel } from './deploymentPresentation.js';
+import { derivePodStatusGroup, effectiveStatusGroup, effectiveStatusLabel, expectedModelPodCount } from './deploymentPresentation.js';
 
 const pod = (overrides = {}) => ({
     name: 'model',
@@ -64,4 +64,23 @@ test('fewer ready model-server pods than requested replicas is degraded', () => 
 
     assert.equal(effectiveStatusGroup({ status: 'ready', replicas: 2 }, pods), 'Degraded');
     assert.equal(effectiveStatusLabel({ status: 'ready', replicas: 2 }, pods), 'READY · CAPACITY REDUCED');
+});
+
+test('expected model pods include prefill and decode replicas', () => {
+    assert.equal(expectedModelPodCount({ replicas: 2 }), 2);
+    assert.equal(expectedModelPodCount({ replicas: 2, scale: { prefillReplicas: 1, decodeReplicas: 2 } }), 3);
+    assert.equal(expectedModelPodCount({ replicas: 2, scale: { prefillReplicas: 1, decodeReplicas: 2, slices: 2 } }), 6);
+    assert.equal(expectedModelPodCount({ replicas: 1, scale: { prefillReplicas: null, decodeReplicas: 1 } }), 1);
+});
+
+test('a P/D deployment is degraded when one of three expected model pods is missing', () => {
+    const pods = [
+        pod({ name: 'prefill-a', labels: { 'llm-d.ai/role': 'prefill', 'llm-d.ai/inference-serving': 'true' } }),
+        pod({ name: 'decode-a', labels: { 'llm-d.ai/role': 'decode', 'llm-d.ai/inference-serving': 'true' } }),
+        pod({ name: 'decode-b', phase: 'Pending', ready: false, labels: { 'llm-d.ai/role': 'decode' } }),
+    ];
+
+    assert.equal(expectedModelPodCount({ replicas: 2, scale: { prefillReplicas: 1, decodeReplicas: 2 } }), 3);
+    assert.equal(expectedModelPodCount({ replicas: 2, scale: { prefillReplicas: 1, decodeReplicas: 2, slices: 2 } }), 6);
+    assert.equal(effectiveStatusGroup({ status: 'ready', replicas: 2, scale: { prefillReplicas: 1, decodeReplicas: 2 } }, pods), 'Degraded');
 });

@@ -33,7 +33,7 @@ COPY apps/backend/src ./apps/backend/src
 RUN python -m pip install --no-cache-dir -e "apps/backend[embedded-db,ldap]"
 COPY packages/shared ./packages/shared
 COPY --from=build /app/apps/frontend/dist ./apps/frontend/dist
-COPY scripts/run-backend.sh scripts/storage-env.sh ./scripts/
+COPY hack/run-backend.sh hack/storage-env.sh ./hack/
 
 ENV LENS_DATA_DIR=/var/lib/lens
 ENV LENS_CACHE_DIR=/var/cache/lens
@@ -43,4 +43,4 @@ ENV PORT=8080
 ENV NODE_ENV=production
 EXPOSE 8080
 
-CMD ["bash", "scripts/run-backend.sh"]
+CMD ["bash", "hack/run-backend.sh"]

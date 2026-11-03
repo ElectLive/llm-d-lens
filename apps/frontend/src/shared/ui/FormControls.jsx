@@ -132,14 +132,14 @@ export const Checkbox = React.forwardRef(function Checkbox({ className, label, .
     );
 });
 
-export function HelpTooltip({ label, children, trigger, className, tooltipClassName = 'inset-x-0 top-full pt-1' }) {
+export function HelpTooltip({ label, children, trigger, className, iconSize = 14, tooltipClassName = 'inset-x-0 top-full pt-1' }) {
     const helpId = React.useId();
     return (
         <span className={cn('group inline-flex', className)}>
             {trigger ? React.cloneElement(trigger, { 'aria-describedby': helpId }) : <button type="button" aria-label={label}
                 aria-describedby={helpId}
                 className="inline-flex rounded-full p-0.5 text-theme-muted hover:text-theme-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40">
-                <CircleHelp size={14} aria-hidden="true" />
+                <CircleHelp size={iconSize} aria-hidden="true" />
             </button>}
             <span className={cn('invisible absolute z-10 group-hover:visible group-focus-within:visible', tooltipClassName)}>
                 <span id={helpId} role="tooltip"

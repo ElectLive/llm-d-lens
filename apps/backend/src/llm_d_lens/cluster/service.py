@@ -9,7 +9,9 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import time
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -25,6 +27,7 @@ from llm_d_lens.infrastructure.process import CommandResult
 from llm_d_lens.monitoring.cluster_stack.discovery import discover_cluster_stack
 from llm_d_lens.monitoring.cluster_stack.errors import ClusterStackError
 from llm_d_lens.monitoring.prometheus import query_vector as _prometheus_query
+from llm_d_lens.versions import LWS_NAMESPACE, LWS_RELEASE, lws_chart, lws_version
 from llm_d_lens.versions import stack as stack_profile
 
 logger = logging.getLogger(__name__)
@@ -55,6 +58,111 @@ async def cluster_is_ready(cluster: registry.Cluster) -> bool:
     except (FileNotFoundError, TimeoutError):
         return False
     return result.returncode == 0 and "ok" in (result.stdout or "").lower()
+
+
+async def lws_status(cluster_id: str) -> dict[str, Any]:
+    """Report the pinned LeaderWorkerSet CRD and controller readiness."""
+    version = lws_version()
+    try:
+        crd = await run_kubectl(
+            ["get", "crd", "disaggregatedsets.disaggregatedset.x-k8s.io", "-o", "name"],
+            cluster_id=cluster_id,
+            timeout=30,
+        )
+        controller = await run_kubectl(
+            ["get", "deployment", "lws-controller-manager", "--namespace", LWS_NAMESPACE, "-o", "json"],
+            cluster_id=cluster_id,
+            timeout=30,
+        )
+    except Exception as error:  # noqa: BLE001 - status is best effort
+        return {"ready": False, "crd": "unknown", "controller": "unknown", "version": version, "message": str(error)}
+    crd_ready = crd.returncode == 0
+    try:
+        controller_status = json.loads(controller.stdout) if controller.returncode == 0 else {}
+    except ValueError:
+        controller_status = {}
+    controller_ready = int((controller_status.get("status") or {}).get("availableReplicas") or 0) > 0
+    message = "" if crd_ready and controller_ready else "LeaderWorkerSet is not installed on this cluster"
+    return {
+        "ready": crd_ready and controller_ready,
+        "crd": "ready" if crd_ready else "missing",
+        "controller": "ready" if controller_ready else "missing",
+        "version": version,
+        "namespace": LWS_NAMESPACE,
+        "message": message,
+    }
+
+
+async def install_lws(cluster_id: str) -> dict[str, Any]:
+    """Install/upgrade the pinned LeaderWorkerSet controller with DisaggregatedSet."""
+    cluster = registry.require_cluster(cluster_id)
+    kubeconfig = registry.kubeconfig_path(cluster.id)
+    if not kubeconfig.is_file():
+        return {"ok": False, "ready": False, "message": "cluster kubeconfig is unavailable"}
+    helm = shutil.which("helm")
+    if helm is None:
+        return {"ok": False, "ready": False, "message": "helm is not installed on the Lens host"}
+    version = lws_version()
+    with tempfile.TemporaryDirectory(prefix="lens-lws-") as directory:
+        pull = await asyncio.create_subprocess_exec(
+            helm,
+            "pull",
+            lws_chart(),
+            "--version",
+            version,
+            "--untar",
+            "--untardir",
+            directory,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await pull.communicate()
+        if pull.returncode:
+            return {
+                "ok": False,
+                "ready": False,
+                "message": (stderr or stdout).decode(errors="replace").strip() or "could not pull the LWS chart",
+            }
+        crds = Path(directory) / "lws" / "crds"
+        for manifest in sorted(crds.glob("*.yaml")) if crds.is_dir() else []:
+            result = await run_kubectl(
+                ["apply", "--server-side", "--force-conflicts", "--filename", str(manifest)],
+                cluster_id=cluster.id,
+                timeout=300,
+            )
+            if result.returncode:
+                return {"ok": False, "ready": False, "message": (result.stderr or result.stdout).strip()}
+        environment = {**os.environ, "KUBECONFIG": str(kubeconfig), **resolve_proxy_env(cluster.id)}
+        install = await asyncio.create_subprocess_exec(
+            helm,
+            "upgrade",
+            "--install",
+            LWS_RELEASE,
+            lws_chart(),
+            "--version",
+            version,
+            "--namespace",
+            LWS_NAMESPACE,
+            "--create-namespace",
+            "--set",
+            "enableDisaggregatedSet=true",
+            "--skip-crds",
+            "--wait",
+            "--timeout",
+            "300s",
+            env=environment,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await install.communicate()
+        if install.returncode:
+            return {
+                "ok": False,
+                "ready": False,
+                "message": (stderr or stdout).decode(errors="replace").strip() or "LWS installation failed",
+            }
+    status = await lws_status(cluster.id)
+    return {"ok": bool(status.get("ready")), **status}
 
 
 async def set_node_maintenance(cluster: registry.Cluster, names: list[str], *, disabled: bool) -> list[dict[str, Any]]:

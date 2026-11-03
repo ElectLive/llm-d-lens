@@ -33,7 +33,8 @@ test-reuse: ## Run reuse tooling tests
 	npm run reuse:test
 
 PYTHON ?= .venv/bin/python
-test-python: ## Run Python backend tests
+test-python: ## Run Python engine and backend tests
+	$(PYTHON) -m pytest apps/lens/tests
 	$(PYTHON) -m pytest apps/backend/tests
 
 .PHONY: lint lint-js lint-python
@@ -43,12 +44,12 @@ lint-js:
 	npm run lint
 
 lint-python:
-	ruff check apps/backend/src apps/backend/tests
-	ruff format --check apps/backend/src apps/backend/tests
+	ruff check apps/lens apps/backend/src apps/backend/tests
+	ruff format --check apps/lens apps/backend/src apps/backend/tests
 
 .PHONY: fmt
 fmt: ## Format Python code
-	ruff format apps/backend/src apps/backend/tests
+	ruff format apps/lens apps/backend/src apps/backend/tests
 
 .PHONY: pre-commit
 pre-commit: ## Run pre-commit hooks on all files
@@ -71,11 +72,12 @@ verify-full: ## Run all local checks with compact output and per-check logs
 	run lint npm run lint; \
 	run python-lint "$$PRISM_PYTHON_BIN" -m ruff check .; \
 	run python-format "$$PRISM_PYTHON_BIN" -m ruff format --check .; \
-	run mcp node scripts/generate-mcp-tools.mjs; \
+	run mcp node hack/generate-mcp-tools.mjs; \
 	run types npm run type-check; \
 	run javascript-tests $(MAKE) test-app-js; \
 	run reuse-tests $(MAKE) test-reuse; \
-	run tool-tests node --test tools/check-docs.test.mjs tools/check-english.test.mjs tools/check-llm-d-stack.test.mjs; \
+	run tool-tests node --test hack/check-docs.test.mjs hack/check-english.test.mjs hack/check-llm-d-stack.test.mjs; \
+	run engine-tests "$$PRISM_PYTHON_BIN" -m pytest apps/lens/tests -q; \
 	run python-tests "$$PRISM_PYTHON_BIN" -m pytest apps/backend/tests apps/backend/src/llm_d_lens -q; \
 	run frontend-build npm run build; \
 	run docs-build npm run docs:build; \
@@ -91,11 +93,13 @@ ifeq ($(CONTAINER_TOOL),docker)
 		--platform $(PLATFORMS) \
 		--tag $(IMAGE):$(VERSION) \
 		--tag $(IMAGE):latest \
+		-f deploy/Dockerfile \
 		.
 else
 	podman manifest rm $(IMAGE):$(VERSION) 2>/dev/null || true
 	podman build \
 		--platform $(PLATFORMS) \
 		--manifest $(IMAGE):$(VERSION) \
+		-f deploy/Dockerfile \
 		.
 endif

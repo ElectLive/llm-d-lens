@@ -21,7 +21,7 @@ export function fixture(t) {
 test('discovery includes new source but excludes ignored files, tests and generated output', t => {
   const { root, put } = fixture(t);
   put('.gitignore', 'src/private.js\n');
-  for (const name of ['src/live.js', 'server/new.ts', 'llm_d_lens/store.py', 'src/private.js', 'src/a.test.js', 'tools/reuse/semantic.smoke.mjs', 'llm_d_lens/test_a.py', 'dist/a.js', 'server/mcp/tools.ts']) put(name, '');
+  for (const name of ['src/live.js', 'server/new.ts', 'llm_d_lens/store.py', 'src/private.js', 'src/a.test.js', 'hack/reuse/semantic.smoke.mjs', 'llm_d_lens/test_a.py', 'dist/a.js', 'server/mcp/tools.ts']) put(name, '');
   assert.deepEqual(discover(root), ['llm_d_lens/store.py', 'server/new.ts', 'src/live.js']);
 });
 

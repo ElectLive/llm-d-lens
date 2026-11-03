@@ -21,11 +21,11 @@ for database migration procedures.
 git pull
 npm install
 python3 -m pip install -e 'apps/backend[dev]'
-node scripts/generate-mcp-tools.mjs
-scripts/lens-local.sh restart
+node hack/generate-mcp-tools.mjs
+hack/lens-local.sh restart
 ```
 
-`scripts/lens-local.sh restart` regenerates and validates the reuse map, and
+`hack/lens-local.sh restart` regenerates and validates the reuse map, and
 regenerates the MCP tool catalog, before restarting services.
 
 ## Rolling back

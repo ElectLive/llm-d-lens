@@ -12,7 +12,7 @@ from llm_d_lens.configuration.managed_environment import (
     admin_managed_environment_error,
     is_admin_managed_environment_variable,
 )
-from llm_d_lens.configuration.manifest_facts import _invocation_tokens, _shell_tokens
+from llm_d_lens.configuration.manifest_facts import _invocation_tokens, _shell_tokens, workload_roles
 
 _SHELL_WORD = re.compile(r"""(?:[^\s'"\\]+|'[^']*'|"(?:[^"\\]|\\.)*"|\\[\s\S])+""")
 DEDICATED = {"model", "model-path", "served-model-name", "tensor-parallel-size", "tensor_parallel_size", "tp_size"}
@@ -267,9 +267,8 @@ def configure_cpu_cache(container: dict, gib: float):
 def guide_settings_capabilities(documents: list[dict], device_class: str | None = None) -> dict:
     servers = [
         container
-        for document in documents
-        if document.get("kind") == "Deployment"
-        for container in document.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+        for workload in workload_roles(documents)
+        for container in workload["pod"].get("containers", [])
         if container.get("name") == "modelserver"
     ]
     cpu = bool(servers)

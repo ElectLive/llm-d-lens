@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$ROOT_DIR/scripts/storage-env.sh"
+source "$ROOT_DIR/hack/storage-env.sh"
 if [[ -x "${PYTHON_BIN:-}" ]]; then
   PYTHON="${PYTHON_BIN}"
 elif [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then

@@ -57,3 +57,17 @@ test('software workflow aggregates repository failures and stops on POST failure
     await assert.rejects(downloadClusterSoftware({ id: 'a' }, {}), /Denied/);
     assert.equal(calls, 1);
 });
+
+test('LeaderWorkerSet status and install target the cluster routes', async (t) => {
+    const { installClusterLws, loadClusterLws } = await import('./clusterBackend.js');
+    const calls = [];
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+        calls.push({ url, options });
+        return Response.json({ ready: true });
+    });
+    assert.deepEqual(await loadClusterLws('a/b'), { ready: true });
+    assert.deepEqual(await installClusterLws('a/b'), { ready: true });
+    assert.match(calls[0].url, /a%2Fb\/lws$/);
+    assert.equal(calls[0].options?.method, undefined);
+    assert.equal(calls[1].options.method, 'POST');
+});

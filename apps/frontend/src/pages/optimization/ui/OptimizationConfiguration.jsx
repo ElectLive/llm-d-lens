@@ -85,6 +85,14 @@ function slug(value) {
         .slice(0, 40) || 'workload';
 }
 
+function shortUuid() {
+    return (globalThis.crypto?.randomUUID?.() ?? `${Math.random().toString(16).slice(2)}${Math.random().toString(16).slice(2)}`).slice(0, 8);
+}
+
+function defaultDeploymentName(model) {
+    return `${slug(model)}-${shortUuid()}`;
+}
+
 function estimateModelResources(modelName, acceleratorCount, acceleratorMemoryGiB = 24) {
     const match = String(modelName || '').match(/(?:^|[-_/])(\d+(?:\.\d+)?)b(?:[-_/]|$)/i);
     if (!match) return null;
@@ -176,7 +184,7 @@ export default function OptimizationConfiguration({ onNavigate, onCancel, onPubl
     const modelSource = 'auto-cache';
     const [localModelPath, setModelPath] = useState('/mnt/data/huggingface-cache');
     const modelPath = sharedContext?.modelPath ?? localModelPath;
-    const [localDeploymentName, setDeploymentName] = useState('');
+    const [localDeploymentName, setDeploymentName] = useState(() => defaultDeploymentName(model));
     const deploymentName = sharedContext?.deploymentName ?? localDeploymentName;
     // "auto-cache" no longer accepts a free-typed path: it must come from a
     // registered Model Cache storage volume so the model's presence there can
@@ -535,7 +543,7 @@ export default function OptimizationConfiguration({ onNavigate, onCancel, onPubl
         const requestedPath = pendingIntent?.runtime?.mount_path || requested.mount_path || '';
         setModelPath(requestedPath);
         setModelCacheVolumeId(pendingIntent?.runtime?.storage_volume_id || '');
-        setDeploymentName(pendingIntent?.deployment_name || '');
+        if (pendingIntent?.deployment_name) setDeploymentName(pendingIntent.deployment_name);
     }, [pendingIntent, embedded]);
 
     useEffect(() => {
@@ -962,7 +970,7 @@ export default function OptimizationConfiguration({ onNavigate, onCancel, onPubl
                         connection: targetCluster.transport,
                     },
                     deployment: variantPlan.deployment,
-                    deploymentName: deploymentName.trim() || undefined,
+                    deploymentName: deploymentName.trim() || defaultDeploymentName(model),
                     modelSecret: {
                         mode: 'none',
                     },
@@ -1283,7 +1291,7 @@ export default function OptimizationConfiguration({ onNavigate, onCancel, onPubl
                 </ConfigurationField>
                 <div className="sm:col-span-2">
                     <span className={labelClass}>Deployment name</span>
-                    <input className={inputClass} value={deploymentName} placeholder="Optional display name"
+                    <input className={inputClass} value={deploymentName} placeholder="e.g. qwen3-8b-1a2b3c4d"
                         onChange={(event) => setDeploymentName(event.target.value)} />
                 </div>
                 {modelSource === 'auto-cache' && <div className="sm:col-span-2">

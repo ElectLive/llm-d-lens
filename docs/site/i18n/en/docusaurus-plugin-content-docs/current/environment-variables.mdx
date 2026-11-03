@@ -3,7 +3,7 @@ title: Environment Variables
 description: Environment variables that configure the Lens backend, database, and Model Service gateway.
 ---
 
-Set these before starting the backend (`scripts/run-backend.sh`) or export
+Set these before starting the backend (`hack/run-backend.sh`) or export
 them in your shell/Compose/Helm values. Most have working defaults for local
 development; production and Model Service gateway deployments typically need
 to set the auth and gateway groups explicitly.
@@ -77,7 +77,7 @@ and the pinned version in `llm_d_lens/versions/llm_d_stack.yaml`.
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `TARGET_NODE` | Optional node constraint for `scripts/lens-local.sh check/start/restart`; overridden by `--target-node`. Exported to the backend as `PRISM_K8S_TARGET_NODE`. | unset; falls back to `PRISM_K8S_TARGET_NODE` |
+| `TARGET_NODE` | Optional node constraint for `hack/lens-local.sh check/start/restart`; overridden by `--target-node`. Exported to the backend as `PRISM_K8S_TARGET_NODE`. | unset; falls back to `PRISM_K8S_TARGET_NODE` |
 | `KUBECONFIG` | Fallback kubeconfig when a cluster-specific one isn't registered. The local launcher accepts `--kubeconfig FILE` as an override. | Kubernetes configuration lookup, normally `$HOME/.kube/config` |
 | `PRISM_GPU_PCI_ALLOWLIST` | Optional explicit comma-separated PCI restriction. The local launcher preserves it; hardware discovery remains in the backend. | unset |
 | `PRISM_KUBERNETES_BACKEND` / `PRISM_KUBERNETES_READ_BACKEND` | Selects which Kubernetes client implementation serves writes/reads. | `PRISM_KUBERNETES_BACKEND`: `sdk`<br />`PRISM_KUBERNETES_READ_BACKEND`: `sdk` |

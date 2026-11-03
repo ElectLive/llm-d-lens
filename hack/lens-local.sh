@@ -9,14 +9,15 @@
 # frontend/backend proxies read the same variables so everything stays in sync.
 #
 # Usage:
-#   scripts/lens-local.sh check     # validate the environment without starting anything
-#   scripts/lens-local.sh start     # start all services (background, logs in .dev-logs/)
-#   scripts/lens-local.sh stop      # stop all services started by this script
-#   scripts/lens-local.sh restart [all|frontend|server|backend] # validate, then restart selected services
-#   scripts/lens-local.sh status    # show which services are running
-#   scripts/lens-local.sh clean [-y|--yes]  # stop services, delete embedded DB + all
-#                                    # local app data under ~/.llm-d-lens
-#   scripts/lens-local.sh install-node  # install a supported Node.js into .dev-tools/
+#   hack/lens-local.sh check     # validate the environment without starting anything
+#   hack/lens-local.sh start     # start all services (background, logs in .dev-logs/)
+#   hack/lens-local.sh stop      # stop all services started by this script
+#   hack/lens-local.sh restart [all|frontend|server|backend] # validate, then restart selected services
+#   hack/lens-local.sh status    # show which services are running
+#   hack/lens-local.sh clean [-y|--yes] [--cache|--hard|--all]
+#                                    # stop services, delete app state; optionally
+#                                    # caches, the dev venv/toolchain, or everything
+#   hack/lens-local.sh install-node  # install a supported Node.js into .dev-tools/
 #
 # When the system Node.js is missing or older than NODE_MIN_MAJOR, 'start'
 # downloads an official Node.js build into .dev-tools/ (checksum-verified) and
@@ -73,7 +74,7 @@ LOCAL_NODE_DIR="$TOOLS_DIR/node"
 RUST_MIN_VERSION="${RUST_MIN_VERSION:-1.80.0}"
 
 # Shared persistent data, disposable cache and diagnostic log roots.
-source "$ROOT_DIR/scripts/storage-env.sh"
+source "$ROOT_DIR/hack/storage-env.sh"
 EVALUATE_STORE="$LENS_DATA_DIR/metadata/evaluations"
 
 # Optional IP address or DNS name advertised for deployment Model APIs. When
@@ -515,12 +516,12 @@ cmd_check() {
             log "  node:     $(node --version)"
         else
             fail "  node:     $(node --version) (required >= $NODE_MIN_MAJOR.x)"
-            warn "  Run 'scripts/lens-local.sh install-node' (or 'start') to install it locally."
+            warn "  Run 'hack/lens-local.sh install-node' (or 'start') to install it locally."
             ok=0
         fi
     else
         fail "  node:     MISSING (required >= $NODE_MIN_MAJOR.x)"
-        warn "  Run 'scripts/lens-local.sh install-node' (or 'start') to install it locally."
+        warn "  Run 'hack/lens-local.sh install-node' (or 'start') to install it locally."
         ok=0
     fi
     command -v npm  >/dev/null 2>&1 && log "  npm:      $(npm --version)"  || { fail "  npm:      MISSING"; ok=0; }
@@ -561,7 +562,7 @@ cmd_check() {
             && log "  python deps: llm_d_lens + uvicorn importable" \
             || { fail "  python deps: import failed — run 'pip install -e apps/backend'"; ok=0; }
     else
-        fail "  venv:     missing (.venv/bin/python) — 'scripts/lens-local.sh start' will create it"
+        fail "  venv:     missing (.venv/bin/python) — 'hack/lens-local.sh start' will create it"
         ok=0
     fi
 
@@ -618,7 +619,7 @@ ensure_tls() {
         return 0
     fi
     local cert_env
-    if ! cert_env="$("$ROOT_DIR/scripts/generate-self-signed-cert.sh" "$host" "$TLS_DIR")"; then
+    if ! cert_env="$("$ROOT_DIR/hack/generate-self-signed-cert.sh" "$host" "$TLS_DIR")"; then
         warn "failed to generate a self-signed TLS certificate; falling back to plain HTTP."
         ENABLE_HTTPS=0
         return 0
@@ -686,13 +687,13 @@ prepare_start() {
     if [[ "${1:-all}" != frontend ]]; then regenerate_mcp_tools || return 1; fi
     log "updating reusable capability map..."
     local reuse_status=0
-    node tools/reuse/cli.mjs map || reuse_status=$?
+    node hack/reuse/cli.mjs map || reuse_status=$?
     if [[ "$reuse_status" -ne 0 ]]; then
         fail "Reuse map update failed. Ask the coding AI to fix .reuse/catalog.json; services were not stopped."
         return "$reuse_status"
     fi
     log "validating reuse registrations and pending decisions..."
-    node tools/reuse/cli.mjs check --purpose startup || reuse_status=$?
+    node hack/reuse/cli.mjs check --purpose startup || reuse_status=$?
     if [[ "$reuse_status" -eq 2 ]]; then
         warn "Pending refactor decisions require review; continuing local startup. See the pending decisions above."
         return 0
@@ -798,7 +799,7 @@ start_services() {
         LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE="$authz_tls_insecure" \
         BACKEND_PORT="$BACKEND_PORT" BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}" \
         TLS_CERT_FILE="${TLS_CERT_FILE:-}" TLS_KEY_FILE="${TLS_KEY_FILE:-}" TLS_CA_FILE="${TLS_CA_FILE:-}" \
-        bash scripts/run-backend.sh
+        bash hack/run-backend.sh
     fi
 
     if [[ "$target" == all || "$target" == frontend ]]; then
@@ -857,6 +858,17 @@ cmd_stop() {
     return 0
 }
 
+# ---- status ------------------------------------------------------------------
+cmd_status() {
+    for svc in "${SERVICES[@]}"; do
+        if is_running "$svc"; then
+            log "  $svc: running (pid $(cat "$(pid_file "$svc")"))"
+        else
+            log "  $svc: stopped"
+        fi
+    done
+}
+
 # ---- clean -------------------------------------------------------------------
 # Best-effort graceful stop of a leftover embedded PostgreSQL process for
 # <data_dir>. lens-local.sh's backend runs pgserver in-process, so killing the
@@ -882,19 +894,40 @@ stop_embedded_postgres_process() {
     fi
 }
 
-cmd_clean() {
-    local yes=0
-    [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]] && yes=1
+remove_path() {
+    local path="$1"
+    if [[ -z "$path" || "$path" == "/" || "$path" == "$HOME" || "$path" == "$ROOT_DIR" ]]; then
+        warn "refusing to remove unsafe path: ${path:-<empty>}"
+        return 0
+    fi
+    rm -rf -- "$path"
+}
 
-    local db_dir bootstrap_file lens_home
+cmd_clean() {
+    local clean_option="${1:-}" yes=0 scope="default"
+    case "$clean_option" in
+        -y|--yes) yes=1; scope="${2:-default}" ;;
+        "") ;;
+        *) fail "Unknown clean option: $clean_option"; return 2 ;;
+    esac
+    case "$scope" in default|cache|hard|all) ;; *) fail "Unknown clean scope: $scope"; return 2 ;; esac
+
+    local db_dir bootstrap_file legacy_home
     db_dir="$(python3 -c "import os; print(os.path.expanduser(os.environ.get('LLM_D_BENCH_EMBEDDED_DB_DIR', '~/.llm-d-lens/db/data')))" 2>/dev/null || printf '%s/.llm-d-lens/db/data' "$HOME")"
     bootstrap_file="$(python3 -c "import os; print(os.path.expanduser(os.environ.get('LLM_D_BENCH_DB_BOOTSTRAP_FILE', '~/.llm-d-lens/db-bootstrap.json')))" 2>/dev/null || printf '%s/.llm-d-lens/db-bootstrap.json' "$HOME")"
-    lens_home="$HOME/.llm-d-lens"
+    legacy_home="$HOME/.llm-d-lens"
 
     warn "this will stop dev services and permanently delete:"
     warn "  - the embedded database: $db_dir"
-    warn "  - all local app data:    $lens_home (evaluate results, deploy manifests, datasets, cluster cache, etc.)"
-    warn "  - dev logs/pids:         $PID_DIR, $LOG_DIR"
+    warn "  - local app data:        $LENS_DATA_DIR"
+    warn "  - legacy app data:       $legacy_home"
+    warn "  - logs/pids/runtime:     $LENS_LOG_DIR, $PID_DIR, $LENS_RUNTIME_DIR"
+    if [[ "$scope" == "cache" || "$scope" == "all" ]]; then
+        warn "  - local cache:           $LENS_CACHE_DIR (source checkouts, benchmark venvs, temp)"
+    fi
+    if [[ "$scope" == "hard" || "$scope" == "all" ]]; then
+        warn "  - dev environment:       .venv, .dev-tools, .dev-tls, node_modules, build outputs"
+    fi
     if [[ "$yes" -ne 1 ]]; then
         local reply
         read -r -p "Type 'yes' to continue: " reply || true
@@ -907,32 +940,41 @@ cmd_clean() {
     cmd_stop
     stop_embedded_postgres_process "$db_dir"
 
-    rm -rf "$lens_home"
-    # lens_home already covers db_dir/bootstrap_file by default, but an
-    # override (LLM_D_BENCH_EMBEDDED_DB_DIR / _DB_BOOTSTRAP_FILE) could point
-    # elsewhere -- remove those explicitly too so `clean` is correct either way.
-    rm -rf "$db_dir"
-    rm -f "$bootstrap_file"
-    rm -rf "$PID_DIR" "$LOG_DIR"
+    remove_path "$LENS_DATA_DIR"
+    remove_path "$legacy_home"
+    remove_path "$db_dir"
+    remove_path "$bootstrap_file"
+    remove_path "$LENS_LOG_DIR"
+    remove_path "$LENS_RUNTIME_DIR"
+    remove_path "$PID_DIR"
+    remove_path "$ROOT_DIR/.dev-logs"
+    remove_path "$ROOT_DIR/.lens-logs"
 
-    log "clean complete -- local database and app data have been removed."
-}
+    if [[ "$scope" == "cache" || "$scope" == "all" ]]; then
+        remove_path "$LENS_CACHE_DIR"
+        remove_path "$LENS_SCRATCH_DIR"
+    fi
 
-# ---- status ------------------------------------------------------------------
-cmd_status() {
-    for svc in "${SERVICES[@]}"; do
-        if is_running "$svc"; then
-            log "  $svc: running (pid $(cat "$(pid_file "$svc")"))"
-        else
-            log "  $svc: stopped"
-        fi
-    done
+    if [[ "$scope" == "hard" || "$scope" == "all" ]]; then
+        remove_path "$ROOT_DIR/.venv"
+        remove_path "$ROOT_DIR/.dev-tools"
+        remove_path "$ROOT_DIR/.dev-tls"
+        remove_path "$ROOT_DIR/node_modules"
+        remove_path "$ROOT_DIR/apps/frontend/node_modules"
+        remove_path "$ROOT_DIR/docs/site/node_modules"
+        remove_path "$ROOT_DIR/apps/frontend/dist"
+        remove_path "$ROOT_DIR/docs/site/build"
+        remove_path "$ROOT_DIR/.pytest_cache"
+        remove_path "$ROOT_DIR/apps/backend/.pytest_cache"
+    fi
+
+    log "clean complete -- requested local state has been removed."
 }
 
 # ---- dispatch ----------------------------------------------------------------
 print_usage() {
     cat <<'EOF'
-Usage: scripts/lens-local.sh COMMAND [OPTIONS]
+Usage: hack/lens-local.sh COMMAND [OPTIONS]
 
 Local source installation and service management:
   check          Validate the environment without starting services.
@@ -942,10 +984,15 @@ Local source installation and service management:
   stop           Stop services started by this launcher.
   status         Show running service PIDs.
   install-node   Install a supported Node.js into .dev-tools/.
-  clean [-y|--yes]
+  clean [-y|--yes] [--cache|--hard|--all]
                  Stop services and permanently delete the embedded database,
-                 local app data under ~/.llm-d-lens, and launcher logs/PIDs.
-                 Requires confirmation unless -y/--yes is supplied.
+                 local app data, and launcher logs/PIDs. Requires confirmation
+                 unless -y/--yes is supplied.
+                   --cache  also delete the local cache (source checkouts,
+                            benchmark venvs, temporary files)
+                   --hard   also delete the project .venv, .dev-tools, .dev-tls,
+                            node_modules and build outputs
+                   --all    delete app state, caches and the dev environment
 
 Options for check, start and restart:
   --target-node NODE   Override TARGET_NODE; exported as PRISM_K8S_TARGET_NODE.
@@ -974,7 +1021,7 @@ EOF
 }
 
 lens_local_main() {
-    local action="${1:-}" clean_option="" option cluster_options=0 service_target=all service_selected=0
+    local action="${1:-}" clean_scope="default" clean_yes="" option cluster_options=0 service_target=all service_selected=0
     if [[ -z "$action" ]]; then
         print_usage
         return 1
@@ -1013,7 +1060,17 @@ lens_local_main() {
                 ;;
             -y|--yes)
                 [[ "$action" == clean ]] || { fail "$option is only valid for clean."; return 2; }
-                clean_option="$option"
+                clean_yes="$option"
+                shift
+                ;;
+            --cache|--hard|--all)
+                [[ "$action" == clean ]] || { fail "$option is only valid for clean."; return 2; }
+                local requested_scope="${option#--}"
+                if [[ "$clean_scope" != "default" && "$clean_scope" != "$requested_scope" ]]; then
+                    fail "Choose only one of --cache, --hard or --all."
+                    return 2
+                fi
+                clean_scope="$requested_scope"
                 shift
                 ;;
             -h|--help) print_usage; return 0 ;;
@@ -1036,7 +1093,7 @@ lens_local_main() {
         restart) cmd_restart "$service_target" ;;
         stop) cmd_stop ;;
         status) cmd_status ;;
-        clean) cmd_clean "$clean_option" ;;
+        clean) cmd_clean "$clean_yes" "$clean_scope" ;;
         install-node) ensure_node ;;
     esac
 }

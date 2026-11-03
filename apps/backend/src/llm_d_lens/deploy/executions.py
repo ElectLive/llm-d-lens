@@ -15,17 +15,24 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+import yaml
+
+from llm_d_lens.configuration.manifest_facts import workload_roles
 from llm_d_lens.deploy.application import deployment_run_manager
 from llm_d_lens.deploy.contracts import (
     DeploymentMetadata,
     DeploymentMetadataUpdateRequest,
+    DeploymentScaleRequest,
     DeploymentStatus,
+    utcnow,
 )
 from llm_d_lens.deploy.data_plane import deployment_uses_shared_gateway
 from llm_d_lens.deploy.runtime.composition import RuntimeConfigurationError
 from llm_d_lens.deploy.usage import active_usage_reason
+from llm_d_lens.infrastructure.kubernetes import run_kubectl
 
 _store = deployment_run_manager.store
 # Serializes user-driven mutations of one deployment so a metadata edit and a
@@ -43,6 +50,21 @@ class DeploymentExecutionConflictError(Exception):
     def __init__(self, message: str, code: str = "deployment_conflict") -> None:
         super().__init__(message)
         self.code = code
+
+
+class DeploymentScaleError(Exception):
+    """Raised when model-server replicas cannot be read or changed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "deployment_scale_failed",
+        status_code: int = 422,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
 
 
 def _execution_lock(execution_id: str) -> asyncio.Lock:
@@ -100,6 +122,16 @@ class DeploymentExecutionContext:
     #: True when a benchmark must reach this deployment through the shared Gateway.
     uses_shared_gateway: bool = False
     configuration_artifact_ids: tuple[str, ...] = ()
+    scale: dict[str, Any] | None = None
+
+    @property
+    def expected_model_pods(self) -> int:
+        if self.scale:
+            slices = int(self.scale.get("slices") or 1)
+            total = slices * (int(self.scale.get("prefillReplicas") or 0) + int(self.scale.get("decodeReplicas") or 0))
+            if total > 0:
+                return total
+        return max(int(self.replicas or 1), 1)
 
     def api_payload(self) -> dict[str, Any]:
         """Project the execution for HTTP clients without leaking run/case ids."""
@@ -137,6 +169,7 @@ class DeploymentExecutionContext:
             "custom_parameters": self.custom_parameters or [],
             "baseline_endpoint": self.baseline_endpoint,
             "service_ref": self.service_ref,
+            "scale": self.scale,
         }
 
     def search_haystack(self) -> str:
@@ -177,6 +210,7 @@ def serving_metadata(case, execution) -> dict[str, Any]:
             content = {}
     model = content.get("model") if isinstance(content, dict) else {}
     decode = content.get("decode") if isinstance(content, dict) else {}
+    prefill = content.get("prefill") if isinstance(content, dict) else {}
     runtime = content.get("runtime") if isinstance(content, dict) else {}
     custom_params = (
         content.get("customParameters")
@@ -220,6 +254,7 @@ def serving_metadata(case, execution) -> dict[str, Any]:
         "backend": backend,
         "model_name": model.get("name") if isinstance(model, dict) else None,
         "replicas": decode.get("replicaCount") if isinstance(decode, dict) else None,
+        "prefill_replicas": prefill.get("replicaCount") if isinstance(prefill, dict) else None,
         "tensor_parallel_size": decode.get("tensorParallelSize") if isinstance(decode, dict) else None,
         "max_model_len": decode.get("maxModelLen") if isinstance(decode, dict) else None,
         "image": runtime.get("image") if isinstance(runtime, dict) else None,
@@ -235,8 +270,75 @@ def serving_metadata(case, execution) -> dict[str, Any]:
     }
 
 
+def _manifest_disaggregated_set_slices(execution: Any | None) -> int | None:
+    if execution is None:
+        return None
+    artifact = getattr(execution, "artifact", None)
+    reference = Path(getattr(artifact, "manifest_ref", None) or "")
+    if reference.is_dir():
+        reference = reference / "manifest.yaml"
+    if not reference.is_file():
+        return None
+    try:
+        manifest = reference.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if "kind: DisaggregatedSet" not in manifest:
+        return None
+    try:
+        for document in yaml.safe_load_all(manifest):
+            if not isinstance(document, dict) or document.get("kind") != "DisaggregatedSet":
+                continue
+            spec = document.get("spec")
+            if isinstance(spec, dict):
+                slices = spec.get("slices")
+                if isinstance(slices, int) and slices >= 1:
+                    return slices
+    except yaml.YAMLError:
+        return None
+    return None
+
+
+def _scale_projection(serving: dict[str, Any], execution: Any | None) -> dict[str, Any] | None:
+    provenance = getattr(execution, "provenance", None) or {}
+    manual = provenance.get("manual_scale") if isinstance(provenance, dict) else None
+    manual = manual if isinstance(manual, dict) else {}
+    decode = manual.get("decodeReplicas")
+    if decode is None:
+        decode = serving.get("replicas")
+    prefill = manual.get("prefillReplicas")
+    if prefill is None:
+        prefill = serving.get("prefill_replicas")
+    if decode is None and prefill is None:
+        return None
+    slices = manual.get("slices")
+    if slices is None:
+        contract = {}
+        artifact = getattr(execution, "artifact", None)
+        payload = getattr(artifact, "rendered_payload", None)
+        value = getattr(payload, "value", None)
+        if isinstance(value, dict) and isinstance(value.get("deployment_contract"), dict):
+            contract = value["deployment_contract"]
+        disaggregated_set = contract.get("disaggregatedSet")
+        if isinstance(disaggregated_set, dict):
+            slices = disaggregated_set.get("slices")
+    if slices is None:
+        slices = _manifest_disaggregated_set_slices(execution)
+    try:
+        slices = max(int(slices or 1), 1)
+    except (TypeError, ValueError):
+        slices = 1
+    return {
+        "prefillReplicas": prefill,
+        "decodeReplicas": decode,
+        "slices": slices,
+        "manual": bool(manual),
+    }
+
+
 def _context(run, case, execution) -> DeploymentExecutionContext:
     serving = serving_metadata(case, execution)
+    scale = _scale_projection(serving, execution)
     metadata = getattr(execution, "metadata", None) or DeploymentMetadata()
     exec_prov = getattr(execution, "provenance", {}) or {}
     run_prov = getattr(run, "provenance", {}) or {}
@@ -278,7 +380,7 @@ def _context(run, case, execution) -> DeploymentExecutionContext:
         guide=serving["guide"],
         endpoint=execution.endpoint.url if execution.endpoint else None,
         forwarded_endpoint=execution.forwarded_endpoint,
-        replicas=serving["replicas"],
+        replicas=(scale or {}).get("decodeReplicas") or serving["replicas"],
         tensor_parallel_size=serving["tensor_parallel_size"],
         image=serving["image"],
         preserve_deployment=bool(execution.provenance.get("preserve_deployment")),
@@ -305,6 +407,7 @@ def _context(run, case, execution) -> DeploymentExecutionContext:
             or run_prov.get("evaluation_id")
         ),
         uses_shared_gateway=deployment_uses_shared_gateway(execution),
+        scale=scale,
     )
 
 
@@ -400,6 +503,7 @@ def find_execution_context(execution_id: str) -> DeploymentExecutionContext | No
                         case.execution_id = execution.execution_id
                     return _context(run, case, execution)
         serving = serving_metadata(None, execution)
+        scale = _scale_projection(serving, execution)
         metadata = getattr(execution, "metadata", None) or DeploymentMetadata()
         return DeploymentExecutionContext(
             configuration_artifact_ids=tuple(
@@ -420,12 +524,13 @@ def find_execution_context(execution_id: str) -> DeploymentExecutionContext | No
             guide=serving["guide"],
             endpoint=execution.endpoint.url if execution.endpoint else None,
             forwarded_endpoint=execution.forwarded_endpoint,
-            replicas=serving["replicas"],
+            replicas=(scale or {}).get("decodeReplicas") or serving["replicas"],
             tensor_parallel_size=serving["tensor_parallel_size"],
             image=serving["image"],
             preserve_deployment=bool(execution.provenance.get("preserve_deployment")),
             created_at=getattr(execution, "created_at", None),
             updated_at=getattr(execution, "updated_at", None),
+            scale=scale,
         )
 
     if execution_id.startswith("pending:"):
@@ -437,6 +542,7 @@ def find_execution_context(execution_id: str) -> DeploymentExecutionContext | No
             if run and case:
                 provenance = case.create_request.provenance or run.provenance or {}
                 serving = serving_metadata(case, None)
+                scale = _scale_projection(serving, None)
                 metadata = DeploymentMetadata(description=str(provenance.get("description") or "").strip())
                 return DeploymentExecutionContext(
                     execution_id=execution_id,
@@ -454,12 +560,13 @@ def find_execution_context(execution_id: str) -> DeploymentExecutionContext | No
                     guide=serving["guide"],
                     endpoint=None,
                     forwarded_endpoint=None,
-                    replicas=serving["replicas"],
+                    replicas=(scale or {}).get("decodeReplicas") or serving["replicas"],
                     tensor_parallel_size=serving["tensor_parallel_size"],
                     image=serving["image"],
                     preserve_deployment=bool(provenance.get("preserve_deployment")),
                     created_at=getattr(run, "created_at", None),
                     updated_at=getattr(run, "finished_at", None),
+                    scale=scale,
                 )
 
     return None
@@ -524,6 +631,397 @@ def get_execution_context(execution_id: str) -> DeploymentExecutionContext:
     if context is None:
         raise DeploymentExecutionNotFoundError(f"deployment execution not found: {execution_id}")
     return context
+
+
+def _execution_cluster_id(execution) -> str | None:
+    provenance = execution.provenance or {}
+    cluster_ref = provenance.get("cluster_ref")
+    if isinstance(cluster_ref, dict) and cluster_ref.get("id"):
+        return str(cluster_ref["id"])
+    return _optional_str(provenance.get("cluster_server_id"))
+
+
+def _scale_role(role: str) -> str | None:
+    if role == "serving":
+        return "decode"
+    return role if role in {"prefill", "decode"} else None
+
+
+def _has_model_server(pod: dict[str, Any]) -> bool:
+    for container in pod.get("containers") or []:
+        name = str(container.get("name") or "").lower()
+        if name in {"modelserver", "model-server", "vllm", "sglang"} or name.startswith("modelserver"):
+            return True
+        command = container.get("command") or []
+        args = container.get("args") or []
+        if isinstance(command, str):
+            command = [command]
+        if isinstance(args, str):
+            args = [args]
+        invocation = " ".join(str(item) for item in [*command, *args]).lower()
+        if "vllm serve" in invocation or "sglang" in invocation:
+            return True
+    return False
+
+
+def _execution_manifest_documents(execution) -> list[dict[str, Any]]:
+    reference = Path(execution.artifact.manifest_ref or "")
+    if reference.is_dir():
+        reference = reference / "manifest.yaml"
+    if not reference.is_file():
+        return []
+    try:
+        return [
+            document
+            for document in yaml.safe_load_all(reference.read_text(encoding="utf-8"))
+            if isinstance(document, dict)
+        ]
+    except yaml.YAMLError as error:
+        raise DeploymentScaleError(f"rendered deployment manifest is invalid YAML: {error}") from error
+
+
+async def _live_deployments(execution) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    cluster_id = _execution_cluster_id(execution)
+    if not execution.namespace or not cluster_id:
+        return [], {}
+    try:
+        result = await run_kubectl(
+            ["get", "deployments", "--namespace", execution.namespace, "--output", "json"],
+            timeout=10,
+            cluster_id=cluster_id,
+        )
+    except (FileNotFoundError, TimeoutError, OSError):
+        return [], {}
+    if result.returncode != 0:
+        return [], {}
+    try:
+        items = json.loads(result.stdout or "{}").get("items") or []
+    except (TypeError, ValueError):
+        return [], {}
+    replicas: dict[str, int] = {}
+    for item in items:
+        name = str((item.get("metadata") or {}).get("name") or "")
+        value = (item.get("spec") or {}).get("replicas")
+        if name and isinstance(value, int):
+            replicas[name] = value
+    return items, replicas
+
+
+async def _live_disaggregated_sets(execution, names: set[str]) -> dict[str, dict[str, Any]]:
+    cluster_id = _execution_cluster_id(execution)
+    if not execution.namespace or not cluster_id:
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for name in sorted(names):
+        try:
+            response = await run_kubectl(
+                ["get", "disaggregatedset", name, "--namespace", execution.namespace, "--output", "json"],
+                timeout=10,
+                cluster_id=cluster_id,
+            )
+        except (FileNotFoundError, TimeoutError, OSError):
+            continue
+        if response.returncode != 0:
+            continue
+        try:
+            document = json.loads(response.stdout or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(document, dict) and document.get("kind") == "DisaggregatedSet":
+            result[name] = document
+    return result
+
+
+def _scale_workloads(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    workloads: list[dict[str, Any]] = []
+    unsupported: list[str] = []
+    for item in workload_roles(documents):
+        if not _has_model_server(item.get("pod") or {}):
+            continue
+        role = _scale_role(str(item.get("role") or ""))
+        if role is None:
+            continue
+        name = str(item.get("name") or "")
+        kind = str(item.get("kind") or "")
+        if not name:
+            continue
+        if kind not in {"Deployment", "DisaggregatedSet"}:
+            unsupported.append(f"{kind}/{name}")
+            continue
+        role_document = item.get("role_document") or {}
+        scaling = role_document.get("scaling") if isinstance(role_document, dict) else None
+        workloads.append(
+            {
+                "role": role,
+                "name": name,
+                "kind": kind,
+                "manifestReplicas": item.get("replicas"),
+                "roleIndex": item.get("role_index"),
+                "slices": item.get("slices", 1),
+                "scalingMode": (scaling or {}).get("mode", "Static") if isinstance(scaling, dict) else "Static",
+            }
+        )
+    if unsupported:
+        raise DeploymentScaleError(
+            "Manual scaling supports Deployment and DisaggregatedSet model servers; "
+            f"unsupported workloads: {', '.join(unsupported)}.",
+            code="deployment_scale_unsupported",
+        )
+    return workloads
+
+
+def _role_replicas(workloads: list[dict[str, Any]]) -> int | None:
+    values = [
+        workload["currentReplicas"]
+        for workload in workloads
+        if isinstance(workload.get("currentReplicas"), int) and workload["currentReplicas"] >= 0
+    ]
+    return max(values) if values else None
+
+
+async def _build_scale_plan(execution) -> dict[str, Any]:
+    if execution.status not in {DeploymentStatus.READY, DeploymentStatus.FAILED}:
+        raise DeploymentScaleError(
+            "Deployment must be ready or failed before replicas can be scaled.",
+            code="deployment_scale_conflict",
+            status_code=409,
+        )
+    if not execution.namespace or not _execution_cluster_id(execution):
+        raise DeploymentScaleError(
+            "Deployment namespace or cluster is unavailable.",
+            code="deployment_scale_unsupported",
+        )
+    documents = _execution_manifest_documents(execution)
+    live_items, live_replicas = await _live_deployments(execution)
+    if not documents:
+        documents = live_items
+    workloads = _scale_workloads(documents)
+    disaggregated_sets = sorted({workload["name"] for workload in workloads if workload["kind"] == "DisaggregatedSet"})
+    if len(disaggregated_sets) > 1:
+        raise DeploymentScaleError(
+            "Manual scaling supports one DisaggregatedSet per execution.",
+            code="deployment_scale_unsupported",
+        )
+    live_sets = await _live_disaggregated_sets(execution, set(disaggregated_sets))
+    resolved: list[dict[str, Any]] = []
+    for workload in workloads:
+        if workload["kind"] != "DisaggregatedSet":
+            workload["currentReplicas"] = live_replicas.get(str(workload["name"]), workload.get("manifestReplicas"))
+            resolved.append(workload)
+    for name in disaggregated_sets:
+        live_document = live_sets.get(name)
+        if live_document is not None:
+            resolved.extend(
+                workload for workload in _scale_workloads([live_document]) if workload["kind"] == "DisaggregatedSet"
+            )
+        else:
+            resolved.extend(
+                workload
+                for workload in workloads
+                if workload["kind"] == "DisaggregatedSet" and workload["name"] == name
+            )
+    for workload in resolved:
+        if workload["kind"] == "DisaggregatedSet":
+            workload["currentReplicas"] = workload.get("manifestReplicas")
+    kinds = {workload["kind"] for workload in resolved}
+    if len(kinds) > 1:
+        raise DeploymentScaleError(
+            "Manual scaling cannot mix Deployment and DisaggregatedSet workloads.",
+            code="deployment_scale_unsupported",
+        )
+    by_role: dict[str, list[dict[str, Any]]] = {"prefill": [], "decode": []}
+    for workload in resolved:
+        by_role[workload["role"]].append(workload)
+    prefill = by_role["prefill"]
+    decode = by_role["decode"]
+    if not prefill and not decode:
+        raise DeploymentScaleError(
+            "No scalable model-server workload was found for this execution.",
+            code="deployment_scale_unsupported",
+        )
+    kind = next(iter(kinds), "Deployment")
+    slices = 1
+    if kind == "DisaggregatedSet":
+        slice_counts = {
+            int(workload.get("slices") or 1) for workload in resolved if workload["kind"] == "DisaggregatedSet"
+        }
+        if len(slice_counts) > 1:
+            raise DeploymentScaleError(
+                "DisaggregatedSet roles report inconsistent slice counts.",
+                code="deployment_scale_unsupported",
+            )
+        slices = next(iter(slice_counts), 1)
+    manual = (execution.provenance or {}).get("manual_scale") or {}
+    return {
+        "kind": kind,
+        "slices": slices,
+        "disaggregatedSet": disaggregated_sets[0] if disaggregated_sets else None,
+        "externalRoles": sorted(
+            {workload["role"] for workload in resolved if workload.get("scalingMode") == "External"}
+        ),
+        "prefillReplicas": _role_replicas(prefill),
+        "decodeReplicas": _role_replicas(decode),
+        "workloads": resolved,
+        "manual": bool(manual),
+    }
+
+
+async def deployment_scale_plan(execution_id: str) -> dict[str, Any]:
+    """Return the current scalable model-server roles for one execution."""
+    execution = _store.get_execution(execution_id)
+    if execution is None:
+        raise DeploymentExecutionNotFoundError(f"deployment execution not found: {execution_id}")
+    return await _build_scale_plan(execution)
+
+
+def _scale_order(changes: dict[str, int], plan: dict[str, Any]) -> list[str]:
+    decreasing = any(target < (plan.get(f"{role}Replicas") or 0) for role, target in changes.items())
+    return ["decode", "prefill"] if decreasing else ["prefill", "decode"]
+
+
+async def scale_deployment_execution(
+    execution_id: str,
+    request: DeploymentScaleRequest,
+    *,
+    actor: str | None = None,
+) -> DeploymentExecutionContext:
+    """Scale live model-server Deployments and record the desired replica counts."""
+    async with _execution_lock(execution_id):
+        execution = _store.get_execution(execution_id)
+        if execution is None:
+            raise DeploymentExecutionNotFoundError(f"deployment execution not found: {execution_id}")
+        plan = await _build_scale_plan(execution)
+        workloads = plan["workloads"]
+        changes: dict[str, int] = {}
+        if request.prefill_replicas is not None:
+            if plan.get("prefillReplicas") is None:
+                raise DeploymentScaleError(
+                    "This deployment has no Prefill workload to scale.",
+                    code="deployment_scale_unsupported",
+                )
+            changes["prefill"] = request.prefill_replicas
+        if request.decode_replicas is not None:
+            if plan.get("decodeReplicas") is None:
+                raise DeploymentScaleError(
+                    "This deployment has no Decode workload to scale.",
+                    code="deployment_scale_unsupported",
+                )
+            changes["decode"] = request.decode_replicas
+        changes = {role: target for role, target in changes.items() if target != plan.get(f"{role}Replicas")}
+        if not changes:
+            return get_execution_context(execution_id)
+        external_roles = set(plan.get("externalRoles") or [])
+        blocked = sorted(set(changes) & external_roles)
+        if blocked:
+            raise DeploymentScaleError(
+                f"Externally managed roles cannot be scaled manually: {', '.join(blocked)}.",
+                code="deployment_scale_unsupported",
+            )
+        cluster_id = _execution_cluster_id(execution)
+        successes: dict[str, int] = {}
+        failures: list[str] = []
+        if plan["kind"] == "DisaggregatedSet":
+            name = str(plan.get("disaggregatedSet") or "")
+            if not name:
+                raise DeploymentScaleError(
+                    "DisaggregatedSet name is unavailable.",
+                    code="deployment_scale_unsupported",
+                )
+            operations: list[dict[str, Any]] = []
+            for role, target in changes.items():
+                role_workloads = [
+                    workload
+                    for workload in workloads
+                    if workload["role"] == role and workload["kind"] == "DisaggregatedSet"
+                ]
+                for workload in role_workloads:
+                    operations.append(
+                        {
+                            "op": "add",
+                            "path": f"/spec/roles/{workload['roleIndex']}/spec/replicas",
+                            "value": target,
+                        }
+                    )
+            try:
+                result = await run_kubectl(
+                    [
+                        "patch",
+                        "disaggregatedset",
+                        name,
+                        "--namespace",
+                        str(execution.namespace),
+                        "--type=json",
+                        "--patch",
+                        json.dumps(operations, separators=(",", ":")),
+                    ],
+                    timeout=60,
+                    cluster_id=cluster_id,
+                )
+            except (FileNotFoundError, TimeoutError, OSError) as error:
+                failures.append(f"DisaggregatedSet/{name}: {error}")
+            else:
+                if result.returncode != 0:
+                    failures.append(
+                        f"DisaggregatedSet/{name}: {(result.stderr or result.stdout or 'scale failed').strip()}"
+                    )
+                else:
+                    successes.update(changes)
+        else:
+            for role in _scale_order(changes, plan):
+                target = changes.get(role)
+                if target is None:
+                    continue
+                role_workloads = [workload for workload in workloads if workload["role"] == role]
+                role_failed = False
+                for workload in role_workloads:
+                    try:
+                        result = await run_kubectl(
+                            [
+                                "scale",
+                                "deployment",
+                                str(workload["name"]),
+                                "--namespace",
+                                str(execution.namespace),
+                                f"--replicas={target}",
+                            ],
+                            timeout=60,
+                            cluster_id=cluster_id,
+                        )
+                    except (FileNotFoundError, TimeoutError, OSError) as error:
+                        failures.append(f"{role} {workload['name']}: {error}")
+                        role_failed = True
+                        continue
+                    if result.returncode != 0:
+                        failures.append(
+                            f"{role} {workload['name']}: {(result.stderr or result.stdout or 'scale failed').strip()}"
+                        )
+                        role_failed = True
+                if not role_failed:
+                    successes[role] = target
+                if failures:
+                    break
+
+        provenance = dict(execution.provenance or {})
+        manual = dict(provenance.get("manual_scale") or {})
+        decode = successes.get("decode", manual.get("decodeReplicas", plan.get("decodeReplicas")))
+        prefill = successes.get("prefill", manual.get("prefillReplicas", plan.get("prefillReplicas")))
+        if decode is not None:
+            manual["decodeReplicas"] = decode
+        if prefill is not None:
+            manual["prefillReplicas"] = prefill
+        manual["kind"] = plan["kind"]
+        manual["slices"] = plan["slices"]
+        manual["updatedAt"] = utcnow().isoformat()
+        manual["updatedBy"] = actor or ""
+        provenance["manual_scale"] = manual
+        _store.update_execution_provenance(execution_id, provenance)
+        if failures:
+            raise DeploymentScaleError(
+                "Deployment scale was partially applied: " + "; ".join(failures),
+                code="deployment_scale_failed",
+                status_code=502,
+            )
+        return get_execution_context(execution_id)
 
 
 async def update_execution_metadata(

@@ -399,6 +399,37 @@ def test_restricted_kubectl_allows_pd_diagnostic_logs(tmp_path: Path, command_ta
     )
 
 
+def test_restricted_kubectl_allows_disaggregatedset_readiness_and_stop(tmp_path: Path):
+    runner = RestrictedKubectlRunner(tmp_path / "kubectl", "llm-d-bench-")
+    namespace = "llm-d-bench-pd-test"
+
+    runner._validate(
+        [
+            "kubectl",
+            "wait",
+            "disaggregatedset/pd-disagg-xpu",
+            "--namespace",
+            namespace,
+            "--for=condition=Available",
+            "--timeout=30s",
+        ]
+    )
+    runner._validate(
+        [
+            "kubectl",
+            "patch",
+            "disaggregatedset/pd-disagg-xpu",
+            "--namespace",
+            namespace,
+            "--type=json",
+            "--patch",
+            "[]",
+        ]
+    )
+    with pytest.raises(RuntimeConfigurationError, match="outside the configured allowlist"):
+        runner._validate(["kubectl", "wait", "deployment/other", "--namespace", namespace])
+
+
 def test_structured_startup_diagnostics_remain_namespace_scoped(tmp_path: Path):
     runner = RestrictedKubectlRunner(tmp_path / "kubectl", "llm-d-bench-")
     runner._validate(["kubectl", "get", "pods", "--namespace", "llm-d-bench-pd-test", "-o", "json"])

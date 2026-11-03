@@ -1295,6 +1295,28 @@ async def test_repeated_probe_and_reconcile_preserve_namespaced_pool_weights(mon
 
 
 @pytest.mark.asyncio
+async def test_reconcile_heals_secure_serving_on_an_unhealthy_member(monkeypatch):
+    """An unhealthy probe may be caused by TLS on the EPP, so status must not suppress healing."""
+    member = _seed_member("cluster-unhealthy")
+    ModelServiceMemberDao().save_health(member.model_copy(update={"status": "unhealthy"}))
+    service = _service(calls=[])
+    monkeypatch.setattr(
+        gateway_ops_module,
+        "get_cluster",
+        lambda _: SimpleNamespace(
+            gateway_provider="istio", gateway_namespace="lens-gateway", gateway_name="lens-inference-gateway"
+        ),
+    )
+    heal = AsyncMock(return_value=True)
+    monkeypatch.setattr(service, "_ensure_epp_plaintext", heal)
+
+    operation = await service.reconcile_cluster_gateway("cluster-unhealthy")
+
+    assert operation.status == "succeeded"
+    heal.assert_awaited_once_with("cluster-unhealthy", "ns", "qwen-epp", on_log=None)
+
+
+@pytest.mark.asyncio
 async def test_heal_data_plane_uses_no_actor_so_the_operation_can_be_recorded(monkeypatch):
     """`created_by_user_id` is a foreign key into `users`; a literal placeholder
     actor (for example "auto-heal") violates it and silently breaks the

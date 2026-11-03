@@ -373,26 +373,26 @@ export default function ClusterMonitoringStackDashboard({ onToggleMobileNav, ini
                         aria-live="polite"
                         className={`relative overflow-hidden rounded-xl border p-4 shadow-xl ${
                             snapshot.status === 'absent' || snapshot.status === 'unsupported'
-                                ? 'border-amber-500/35 bg-gradient-to-r from-amber-950/60 via-amber-950/25 to-slate-950'
-                                : 'border-red-500/40 bg-gradient-to-r from-red-950/70 via-red-950/35 to-slate-950'
+                                ? 'border-[#d1d5db] bg-white dark:border-amber-500/35 dark:bg-slate-950 dark:bg-gradient-to-r dark:from-amber-950/60 dark:via-amber-950/25 dark:to-slate-950'
+                                : 'border-[#d1d5db] bg-white dark:border-red-500/40 dark:bg-slate-950 dark:bg-gradient-to-r dark:from-red-950/70 dark:via-red-950/35 dark:to-slate-950'
                         }`}
                     >
                         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
                             <div className="flex items-start gap-3">
                                 <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border ${
                                     snapshot.status === 'absent' || snapshot.status === 'unsupported'
-                                        ? 'border-amber-500/30 bg-amber-500/15'
-                                        : 'border-red-500/30 bg-red-500/15'
+                                        ? 'border-amber-200 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/15'
+                                        : 'border-red-200 bg-red-50 dark:border-red-500/30 dark:bg-red-500/15'
                                 }`}>
                                     <AlertTriangle className={`h-5 w-5 ${
                                         snapshot.status === 'absent' || snapshot.status === 'unsupported'
-                                            ? 'text-amber-300'
-                                            : 'text-red-300'
+                                            ? 'text-amber-600 dark:text-amber-300'
+                                            : 'text-red-600 dark:text-red-300'
                                     }`} />
                                 </span>
                                 <div>
                                     <div className="flex flex-wrap items-center gap-2">
-                                        <span className="text-sm font-bold text-white">Observability stack is not fully operational</span>
+                                        <span className="text-sm font-bold text-theme-text dark:text-white">Observability stack is not fully operational</span>
                                         <Badge
                                             tone={snapshot.status === 'absent' || snapshot.status === 'unsupported' ? 'warning' : 'danger'}
                                             size="xs"
@@ -400,9 +400,9 @@ export default function ClusterMonitoringStackDashboard({ onToggleMobileNav, ini
                                             {snapshot.status}
                                         </Badge>
                                     </div>
-                                    <p className="mt-1 text-xs leading-relaxed text-slate-300">{snapshot.message}</p>
+                                    <p className="mt-1 text-xs leading-relaxed text-theme-muted dark:text-slate-300">{snapshot.message}</p>
                                     {unhealthyDetails.length > 0 && (
-                                        <p className="mt-1 text-[10px] text-slate-500">
+                                        <p className="mt-1 text-[10px] text-slate-600 dark:text-slate-500">
                                             Affected components: {unhealthyDetails.join(', ')}
                                         </p>
                                     )}
@@ -445,7 +445,7 @@ export default function ClusterMonitoringStackDashboard({ onToggleMobileNav, ini
                         />
 
                         {snapshot.status === 'absent' && !operationId && (
-                            <div className="relative overflow-hidden rounded-2xl border border-cyan-500/20 bg-gradient-to-br from-cyan-950/40 via-slate-900/80 to-slate-950 p-2 shadow-xl">
+                            <div className="relative overflow-hidden rounded-2xl border border-[#d1d5db] bg-white p-2 shadow-xl dark:border-cyan-500/20 dark:bg-slate-950 dark:bg-gradient-to-br dark:from-cyan-950/40 dark:via-slate-900/80 dark:to-slate-950">
                                 <EmptyState
                                     icon={<CloudCog className="h-10 w-10" />}
                                     title="Observability stack is not installed"
@@ -456,9 +456,10 @@ export default function ClusterMonitoringStackDashboard({ onToggleMobileNav, ini
                         )}
 
                         {snapshot.status === 'degraded' && (
-                            <div className="relative overflow-hidden rounded-2xl border border-amber-500/20 bg-gradient-to-br from-amber-950/30 via-slate-900/80 to-slate-950 p-2 shadow-xl">
+                            <div className="relative overflow-hidden rounded-2xl border border-[#d1d5db] bg-white p-2 shadow-xl dark:border-amber-500/20 dark:bg-slate-950 dark:bg-gradient-to-br dark:from-amber-950/30 dark:via-slate-900/80 dark:to-slate-950">
                                 <EmptyState
                                     icon={<AlertTriangle className="h-10 w-10" />}
+                                    iconClassName="border-amber-200 bg-amber-50 text-amber-600 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300"
                                     title="Observability stack is degraded"
                                     message="Review component diagnostics, or reinstall the stack. Reinstalling removes the existing release and deletes stored metrics."
                                     action={<Button variant="sky" onClick={openReinstall}>Reinstall</Button>}

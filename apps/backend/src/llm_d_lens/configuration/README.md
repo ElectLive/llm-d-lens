@@ -109,7 +109,7 @@ For an upgrade:
 4. Check both support flags and an actual candidate search for the target model,
    system, backend, GPU budget and workload. A support flag is not a deployment
    test and does not guarantee candidates for every budget or latency target.
-5. Restart with `scripts/dev.sh restart` and verify the running service. Record
+5. Restart with `hack/lens-local.sh restart` and verify the running service. Record
    the installed SDK/core versions and search outcome in the upgrade PR.
 
 Example smoke check (requires access to the model configuration, or a cached copy):

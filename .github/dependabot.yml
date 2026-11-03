@@ -13,7 +13,7 @@ updates:
 
   # Docker base image updates
   - package-ecosystem: "docker"
-    directory: "/"
+    directory: "/deploy"
     schedule:
       interval: "weekly"
     labels:

@@ -26,7 +26,7 @@ test('real local model retrieves English capabilities from English requirements 
 
 test('repository search finds the shared JSON HTTP client for an English requirement', () => {
   const output = execFileSync(process.execPath, [
-    'tools/reuse/cli.mjs', 'search', 'Send JSON requests consistently and handle server errors', '--offline', '--limit', '5',
+    'hack/reuse/cli.mjs', 'search', 'Send JSON requests consistently and handle server errors', '--offline', '--limit', '5',
   ], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
   const result = JSON.parse(output);
   assert.equal(result.mode, 'local-semantic');
@@ -40,7 +40,7 @@ test('repository requirements report Recall@6 and Recall@12', async () => {
   const { sources } = await import('./repository.mjs');
   const { searchDocuments, updateVectors, rankFiles } = await import('./search.mjs');
   const root = process.cwd();
-  const cases = JSON.parse(readFileSync('tools/reuse/retrieval-cases.json', 'utf8'));
+  const cases = JSON.parse(readFileSync('hack/reuse/retrieval-cases.json', 'utf8'));
   const catalog = JSON.parse(readFileSync('.reuse/catalog.json', 'utf8'));
   const { existsSync } = await import('node:fs');
   const cache = existsSync('.cache/reuse/index.json') ? JSON.parse(readFileSync('.cache/reuse/index.json', 'utf8')) : null;

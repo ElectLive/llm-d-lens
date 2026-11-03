@@ -64,15 +64,15 @@ sign out and back in.
 Check `~/.local/state/lens/logs/dev/backend.log` for the actual exception.
 Common causes: a missing Python dependency after a `[project.dependencies]`
 change (`python3 -m pip install -e '.[dev]'`), or a port already in use —
-`scripts/lens-local.sh` picks free ports automatically and logs which ones it used.
+`hack/lens-local.sh` picks free ports automatically and logs which ones it used.
 
 ## The MCP tool catalog is missing a route you just added
 
-Regenerate it: `node scripts/generate-mcp-tools.mjs`. `scripts/lens-local.sh
+Regenerate it: `node hack/generate-mcp-tools.mjs`. `hack/lens-local.sh
 start`/`restart` do this automatically; only a manual backend restart
-(without going through `scripts/lens-local.sh`) can leave it stale.
+(without going through `hack/lens-local.sh`) can leave it stale.
 
-## Reuse map / task-start validation blocks `scripts/lens-local.sh start`
+## Reuse map / task-start validation blocks `hack/lens-local.sh start`
 
 The reuse-first workflow validates the capability map before starting
 services; an invalid registration or an unresolved pending decision blocks

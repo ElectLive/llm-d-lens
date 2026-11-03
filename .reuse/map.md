@@ -414,17 +414,17 @@ Entry: [apps/backend/src/llm_d_lens/evaluation/router.py](../apps/backend/src/ll
 ## reuse-registration-review
 
 Discover changed public declarations for catalog registration review.
-Entry: [tools/reuse/registration.mjs](../tools/reuse/registration.mjs) — `registrationCandidates`
+Entry: [hack/reuse/registration.mjs](../hack/reuse/registration.mjs) — `registrationCandidates`
 
 ## reuse-decision-scope
 
 Read existing decisions without creating or resolving audit records.
-Entry: [tools/reuse/decisions.mjs](../tools/reuse/decisions.mjs) — `readDecisions`, `evidenceChanged`
+Entry: [hack/reuse/decisions.mjs](../hack/reuse/decisions.mjs) — `readDecisions`, `evidenceChanged`
 
 ## reuse-file-retrieval
 
 Local multilingual capability retrieval with configurable distinct-file recall.
-Entry: [tools/reuse/search.mjs](../tools/reuse/search.mjs) — `searchDocuments`, `updateVectors`, `rank`, `rankFiles`, `localEmbedder`
+Entry: [hack/reuse/search.mjs](../hack/reuse/search.mjs) — `searchDocuments`, `updateVectors`, `rank`, `rankFiles`, `localEmbedder`
 
 ## auth-permissions
 
@@ -764,7 +764,7 @@ Entry: [apps/frontend/src/pages/simulation/ui/Simulation/DetailCard.jsx](../apps
 ## repository-english-check
 
 Check all Git-visible repository text and optional PR metadata for Chinese characters.
-Entry: [tools/check-english.mjs](../tools/check-english.mjs) — `checkEnglish`
+Entry: [hack/check-english.mjs](../hack/check-english.mjs) — `checkEnglish`
 
 ## simulation-request-progress
 
@@ -889,12 +889,12 @@ Entry: [apps/backend/src/llm_d_lens/evaluation/router.py](../apps/backend/src/ll
 ## reuse-git-history
 
 Read binary-safe historical Git blobs in a batch and compare source duplication.
-Entry: [tools/reuse/repository.mjs](../tools/reuse/repository.mjs) — `SOURCE_ROOTS`, `revisionFiles`, `sources`, `duplicates`
+Entry: [hack/reuse/repository.mjs](../hack/reuse/repository.mjs) — `SOURCE_ROOTS`, `revisionFiles`, `sources`, `duplicates`
 
 ## documentation-file-links
 
 Check local Markdown and MDX file targets for selected documentation files.
-Entry: [tools/check-docs.mjs](../tools/check-docs.mjs) — `checkDocs`
+Entry: [hack/check-docs.mjs](../hack/check-docs.mjs) — `checkDocs`
 
 ## cluster-hf-token-secret
 

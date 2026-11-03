@@ -74,7 +74,7 @@ List Lens-managed clusters and optionally include draft records that have not be
 
 ### Get supported llm-d versions
 
-Return the llm-d component versions this Lens release supports (llm-d, llm-d-router, llm-d-benchmark, Inference Payload Processor, Gateway API / Gateway API Inference Extension CRDs and the gateway providers). Read-only; the cluster wizard and every install path use these values.
+Return the llm-d component versions this Lens release supports (llm-d, llm-d-router, llm-d-benchmark, Inference Payload Processor, Gateway API / Gateway API Inference Extension CRDs, LeaderWorkerSet and the gateway providers). Read-only; the cluster wizard and every install path use these values.
 
 <Tabs>
   <TabItem value="rest-api" label="REST API">
@@ -84,13 +84,14 @@ Return the llm-d component versions this Lens release supports (llm-d, llm-d-rou
 
     ```json
     {
-      "llm_d": "v0.10.0",
+      "llm_d": "v1.0.0",
       "min_k8s_version": "v1.32.0",
-      "llm_d_router": "v0.11.0",
-      "llm_d_lensmark": "v0.8.0",
-      "llm_d_inference_payload_processor": "v0.1.0",
-      "k8s_gateway_api": "v1.5.1",
-      "k8s_gateway_api_inference_extension": "v1.5.0",
+      "llm_d_router": "v1.0.0",
+      "llm_d_lensmark": "v1.0.0",
+      "llm_d_inference_payload_processor": "v1.0.0",
+      "k8s_gateway_api": "v1.6.2",
+      "k8s_gateway_api_inference_extension": "v1.6.2",
+      "k8s_lws": "v1.0.0",
       "gateway_providers": {
         "istio": "1.29.4",
         "envoy_gateway": "v1.8.1",
@@ -551,8 +552,8 @@ Pre-pull the pinned llm-d images for the selected accelerators onto every cluste
       "desired": 2,
       "ready": 1,
       "images": [
-        { "name": "ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.11.0", "ready": 2, "desired": 2, "state": "ready" },
-        { "name": "ghcr.io/llm-d/llm-d-router-disagg-sidecar:v0.11.0", "ready": 2, "desired": 2, "state": "ready" },
+        { "name": "ghcr.io/llm-d/llm-d-router-endpoint-picker:v1.0.0", "ready": 2, "desired": 2, "state": "ready" },
+        { "name": "ghcr.io/llm-d/llm-d-router-disagg-sidecar:v1.0.0", "ready": 2, "desired": 2, "state": "ready" },
         { "name": "ghcr.io/llm-d/llm-d-cuda:v0.9.0", "ready": 1, "desired": 2, "state": "pulling" }
       ],
       "nodes": [{ "node": "worker-1", "phase": "Running", "ready": true, "restarts": 0 }]
@@ -654,6 +655,65 @@ Report whether the pinned Gateway API and Gateway API Inference Extension CRDs a
 
     status = await gateway_crds.gateway_crds_status("cluster-a")
     print(status["gateway_api"])
+    ```
+  </TabItem>
+</Tabs>
+
+### Install LeaderWorkerSet controller
+
+Install or upgrade the LeaderWorkerSet controller pinned by the Lens stack profile, enabling the `DisaggregatedSet` API used by the llm-d v1.0 P/D Guide. CRDs are applied server-side before the Helm release is upgraded. Idempotent; the create wizard also calls this after installing the Gateway CRDs.
+
+<Tabs>
+  <TabItem value="rest-api" label="REST API">
+    **`POST /api/cluster/clusters/{cluster_id}/lws`**
+
+    ```json
+    {
+      "ok": true,
+      "ready": true,
+      "crd": "ready",
+      "controller": "ready",
+      "version": "v1.0.0",
+      "namespace": "lws-system",
+      "message": ""
+    }
+    ```
+  </TabItem>
+  <TabItem value="python-api" label="Python API">
+    ```python
+    from llm_d_lens.cluster import service
+
+    result = await service.install_lws("cluster-a")
+    print(result["ready"], result["version"])
+    ```
+  </TabItem>
+</Tabs>
+
+### Get LeaderWorkerSet status
+
+Report whether the pinned LeaderWorkerSet CRD and controller are present on the cluster.
+
+<Tabs>
+  <TabItem value="rest-api" label="REST API">
+    **`GET /api/cluster/clusters/{cluster_id}/lws`**
+
+    ```json
+    {
+      "ready": true,
+      "crd": "ready",
+      "controller": "ready",
+      "version": "v1.0.0",
+      "namespace": "lws-system",
+      "message": ""
+    }
+    ```
+  </TabItem>
+  <TabItem value="python-api" label="Python API">
+    ```python
+    from llm_d_lens.cluster import service
+
+    status = await service.lws_status("cluster-a")
+    print(status["crd"], status["controller"])
     ```
   </TabItem>
 </Tabs>

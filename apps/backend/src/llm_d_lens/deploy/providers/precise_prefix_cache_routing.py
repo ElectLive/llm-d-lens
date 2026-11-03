@@ -129,7 +129,14 @@ class PrecisePrefixCacheRoutingAdapter:
         except ValueError as error:
             self._modelserver_source_error = str(error)
             self._modelserver_source = guide_root / "unavailable-overlay"
-        self._render_source = guide_root / "guides/precise-prefix-cache-routing/render"
+        render_root = guide_root / "guides/precise-prefix-cache-routing/render"
+        if (render_root / "kustomization.yaml").is_file():
+            self._render_source = render_root
+        elif (render_root / "standalone").is_dir() or (render_root / "xpu-sglang").is_dir():
+            variant = "xpu-sglang" if "xpu" in (accelerator or "").lower() else "standalone"
+            self._render_source = render_root / variant
+        else:
+            self._render_source = render_root
         self._baseline_source = (
             Path(__file__).resolve().parent / "guide_overlays" / "precise-prefix-cache-routing" / "baseline"
         )

@@ -557,8 +557,16 @@ class RestrictedKubectlRunner:
             ("create", "namespace"),
             ("delete", "namespace"),
         }
-        is_deployment_scale = len(command) > 2 and command[1] == "scale" and command[2].startswith("deployment/")
-        if tuple(command[1:3]) not in allowed and not is_deployment_scale:
+        is_deployment_scale = (
+            len(command) > 2 and command[1] == "scale" and command[2].startswith(("deployment/", "leaderworkerset/"))
+        )
+        is_workload_wait = (
+            len(command) > 2
+            and command[1] == "wait"
+            and command[2].startswith(("disaggregatedset/", "leaderworkerset/"))
+        )
+        is_workload_patch = len(command) > 2 and command[1] == "patch" and command[2].startswith("disaggregatedset/")
+        if tuple(command[1:3]) not in allowed and not (is_deployment_scale or is_workload_wait or is_workload_patch):
             raise RuntimeConfigurationError("Kubernetes command operation is outside the configured allowlist")
 
     def _record_evidence(self, command: list[str], status: int, output: str, *, timed_out: bool = False) -> None:

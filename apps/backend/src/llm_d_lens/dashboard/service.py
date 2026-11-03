@@ -609,7 +609,7 @@ class DashboardService:
                     cluster_id=context.cluster_id,
                     cluster_name=cluster_names.get(context.cluster_id or "", ""),
                     ready=0,
-                    expected=max(int(context.replicas or 1), 1),
+                    expected=context.expected_model_pods,
                     observed_at=_as_datetime(context.updated_at) or _as_datetime(context.created_at),
                 )
 
@@ -637,7 +637,7 @@ class DashboardService:
                         cluster_id=context.cluster_id,
                         cluster_name=cluster_names.get(context.cluster_id or "", ""),
                         ready=0,
-                        expected=max(int(context.replicas or 1), 1),
+                        expected=context.expected_model_pods,
                         observed_at=_as_datetime(context.updated_at) or _as_datetime(context.created_at),
                     )
                 return None
@@ -650,7 +650,7 @@ class DashboardService:
                 )
                 and not (item.get("metadata") or {}).get("deletionTimestamp")
             )
-            expected = max(int(context.replicas or 1), 1)
+            expected = context.expected_model_pods
             if ready == 0 or ready < expected:
                 return deployment_pod_issue(
                     execution_id=context.execution_id,

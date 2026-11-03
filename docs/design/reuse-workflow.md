@@ -64,8 +64,8 @@ changes, actual test results and remaining gaps. Manual full validation saves
 per-command logs and fails if any command fails; it does not replace live cluster,
 external-provider, container or release/security acceptance.
 
-Implementation: [CLI](../../tools/reuse/cli.mjs),
-[repository checks](../../tools/reuse/repository.mjs),
-[registration discovery](../../tools/reuse/registration.mjs),
-[search](../../tools/reuse/search.mjs) and
-[historical decisions](../../tools/reuse/decisions.mjs).
+Implementation: [CLI](../../hack/reuse/cli.mjs),
+[repository checks](../../hack/reuse/repository.mjs),
+[registration discovery](../../hack/reuse/registration.mjs),
+[search](../../hack/reuse/search.mjs) and
+[historical decisions](../../hack/reuse/decisions.mjs).

@@ -26,6 +26,7 @@ from llm_d_lens.deploy.providers.guide_adapter import (
     ValidationResult,
     serving_arguments,
     set_vllm_argument,
+    set_vllm_shell_argument,
 )
 from llm_d_lens.deploy.providers.hardware_profile import (
     active_profile,
@@ -501,22 +502,7 @@ class HelmKustomizeGuideAdapter:
 
     @staticmethod
     def _set_shell_argument(command: str, name: str, value: object) -> str:
-        boolean = name in {"enable-auto-tool-choice", "enable-prefix-caching", "enforce-eager"} and str(
-            value
-        ).lower() in {"true", "false"}
-        pattern = (
-            rf"--(?:no-)?{re.escape(name)}(?:=(?:true|false))?(?![\w-])"
-            if boolean
-            else rf"--{re.escape(name)}(?:=|\s+)(?:\"[^\"]*\"|'[^']*'|[^\s]+)"
-        )
-        replacement = (
-            (f"--{name}" if str(value).lower() == "true" else f"--no-{name}")
-            if boolean
-            else f"--{name}={shlex.quote(str(value))}"
-        )
-        if re.search(pattern, command):
-            return re.sub(pattern, lambda _: replacement, command)
-        return f"{command.rstrip()} \\\n                {replacement}"
+        return set_vllm_shell_argument(command, name, value)
 
     def _namespace(self, context: dict[str, Any]) -> str:
         namespace = str(context.get("namespace") or "")

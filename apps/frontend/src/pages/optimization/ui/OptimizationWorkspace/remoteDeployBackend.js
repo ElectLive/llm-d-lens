@@ -55,6 +55,17 @@ export async function updateDeploymentMetadata(executionId, { displayName, descr
     return payload;
 }
 
+export async function scaleDeploymentExecution(executionId, { prefillReplicas, decodeReplicas } = {}) {
+    const body = {};
+    if (prefillReplicas !== undefined && prefillReplicas !== null) body.prefill_replicas = prefillReplicas;
+    if (decodeReplicas !== undefined && decodeReplicas !== null) body.decode_replicas = decodeReplicas;
+    return requestJson(`/api/v1/deployments/executions/${encodeURIComponent(executionId)}/scale`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+}
+
 export async function deleteDeploymentExecution(executionId, { deleteNamespace, runId } = {}) {
     // Deleting can clean up cluster resources (see delete_namespace), which needs
     // a live cluster session. Rebind proactively, matching stop/restart/clean below,

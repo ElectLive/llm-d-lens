@@ -68,7 +68,7 @@ class DatabaseSetupRequest(StrictModel):
     # Only meaningful when mode == "embedded": a password to enforce on the
     # embedded PostgreSQL superuser (see settings.py's
     # _harden_embedded_postgres_password). Optional -- omit for a
-    # password-less embedded database (e.g. scripts/lens-local.sh's local-dev use).
+    # password-less embedded database (e.g. hack/lens-local.sh's local-dev use).
     embedded_password: str | None = Field(default=None, alias="embeddedPassword")
 
     @model_validator(mode="after")

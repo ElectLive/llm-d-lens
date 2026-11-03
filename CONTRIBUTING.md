@@ -116,13 +116,13 @@ Daily fixes use targeted tests; agents read failed logs only. Live cluster/provi
 acceptance, containers, online stack checks, model smoke tests and the security
 requirements below remain separate; test skips and build warnings remain in logs.
 
-The optional repository hook (`git config core.hooksPath scripts/hooks`) checks staged
+The optional repository hook (`git config core.hooksPath hack/hooks`) checks staged
 whitespace and English text, without running regression suites. The pre-commit
 framework configuration remains available for staged file hygiene and linters.
 Full regression checks belong in CI; do not run both full and subset suites
 before every commit.
 
-Use Vite hot reload for frontend source changes. `scripts/lens-local.sh restart backend`
+Use Vite hot reload for frontend source changes. `hack/lens-local.sh restart backend`
 or `restart server` restarts only the requested service. Use `restart all` for
 port/environment changes and API changes that alter the server MCP catalog.
 Actual service ports are recorded for targeted restarts. For a session started

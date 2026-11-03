@@ -69,7 +69,7 @@ class DatabaseSettings:
     embedded_data_directory: Path
     # Set when mode == "embedded" and a password was configured at install
     # time (see bootstrap_config.py). None means "stay on pgserver's default
-    # trust auth, no password" -- the scripts/lens-local.sh local-dev case.
+    # trust auth, no password" -- the hack/lens-local.sh local-dev case.
     embedded_password: str | None = None
 
     @classmethod
@@ -234,7 +234,7 @@ def _harden_embedded_postgres_password(server: object, password: str) -> None:
     ``pgserver`` always runs ``initdb --auth=trust --auth-local=trust`` (see
     its ``postgres_server.py``) and never opens a TCP listener -- only a
     Unix domain socket, reachable solely by the local OS user. That's a
-    reasonable default for e.g. ``scripts/lens-local.sh``'s local-dev database
+    reasonable default for e.g. ``hack/lens-local.sh``'s local-dev database
     (``password`` is None there, so this function is never called), but the
     online installer asks the operator to set a
     password as defense in depth. Since PostgreSQL's ``trust`` auth method

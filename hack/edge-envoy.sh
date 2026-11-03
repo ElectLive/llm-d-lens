@@ -6,7 +6,7 @@
 # Docker on the host network so it can reach the tunnels (127.0.0.1:<port>) and
 # Python (127.0.0.1:8081).
 #
-# Usage: scripts/edge-envoy.sh {up|down|reload|config|logs}
+# Usage: hack/edge-envoy.sh {up|down|reload|config|logs}
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

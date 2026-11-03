@@ -103,6 +103,7 @@ _PERMISSIONS: tuple[Permission, ...] = (
     _permission("deployment:run:create", "Create deployments"),
     _permission("deployment:run:cancel", "Cancel deployments"),
     _permission("deployment:execution:update", "Edit deployment metadata"),
+    _permission("deployment:execution:scale", "Scale live deployment replicas"),
     _permission("deployment:execution:delete", "Delete deployments"),
     _permission("deployment:execution:connect", "Connect to deployment endpoints"),
     _permission("deployment:case:execute", "Refresh/stop/restart deployment instances"),

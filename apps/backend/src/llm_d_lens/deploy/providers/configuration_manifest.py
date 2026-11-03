@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
+import shlex
 import shutil
 import tempfile
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
+import yaml
+
+from llm_d_lens.configuration.manifest_facts import vllm_argument_value
 from llm_d_lens.core.hashing import stable_hash
 from llm_d_lens.deploy.providers.deployment_bundle import validate_deployment_bundle
 from llm_d_lens.deploy.providers.guide_adapter import (
@@ -19,13 +24,19 @@ from llm_d_lens.deploy.providers.guide_adapter import (
     GuideDefinition,
     GuideDeploymentArtifact,
     ValidationResult,
+    set_vllm_argument,
+    set_vllm_shell_argument,
 )
 from llm_d_lens.deploy.providers.hardware_profile import (
     accelerator_supported,
     discover_runtime_classes,
     prepare_runtime_class_manifest,
 )
-from llm_d_lens.deploy.providers.shared_memory import prepare_shared_memory
+from llm_d_lens.deploy.providers.shared_memory import (
+    _model_container,
+    _pod_specs,
+    prepare_shared_memory,
+)
 from llm_d_lens.deploy.providers.target_node import apply_placement, configured_target_node, write_pinned_manifest
 from llm_d_lens.infrastructure.artifacts.manifests import (
     DEPLOYMENT_MANIFEST_DIR,
@@ -37,6 +48,421 @@ from llm_d_lens.monitoring.kv_trace.manifest import instrument_manifest
 from llm_d_lens.storage.service import ensure_mount_in_namespace, get_ready_volume
 
 logger = logging.getLogger(__name__)
+
+KV_LOAD_FAILURE_POLICY = "recompute"
+MODEL_SHUTDOWN_TIMEOUT_SECONDS = 90
+MODEL_TERMINATION_GRACE_PERIOD_SECONDS = 120
+MODEL_PRESTOP_SLEEP_SECONDS = 5
+_MODEL_NAME_PREFIXES = ("modelserver", "model-server")
+_VLLM_MARKERS = ("vllm serve", "vllm.entrypoints.")
+_SGLANG_MARKERS = ("sglang.launch_server", "sglang serve")
+
+
+def _as_items(value: Any) -> list[Any]:
+    if isinstance(value, str):
+        return [value]
+    return list(value or [])
+
+
+def _container_invocation(container: dict[str, Any]) -> str:
+    return " ".join(str(item) for item in [*_as_items(container.get("command")), *_as_items(container.get("args"))])
+
+
+def _is_model_container(container: dict[str, Any]) -> bool:
+    if _model_container(container):
+        return True
+    name = str(container.get("name") or "").lower()
+    if name.startswith(_MODEL_NAME_PREFIXES):
+        return True
+    image = str(container.get("image") or "").lower()
+    return "vllm" in image or "sglang" in image
+
+
+def _runtime_kind(container: dict[str, Any]) -> str:
+    invocation = _container_invocation(container).lower()
+    if any(marker in invocation for marker in _VLLM_MARKERS):
+        return "vllm"
+    if any(marker in invocation for marker in _SGLANG_MARKERS):
+        return "sglang"
+    return "other"
+
+
+def _integer(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _existing_shutdown_timeout(container: dict[str, Any]) -> int | None:
+    matches = re.findall(r"--shutdown-timeout(?:=|\s+)(\d+)", _container_invocation(container))
+    return max(int(item) for item in matches) if matches else None
+
+
+_SHUTDOWN_FLAG = "--shutdown-timeout"
+_SHELLS = {"sh", "bash"}
+
+
+def _shell_script_slot(container: dict[str, Any]) -> tuple[str, int] | None:
+    """Locate the script of a validated `sh -c` invocation split across command and args."""
+    command = container.get("command") or []
+    if not command or PurePosixPath(command[0]).name not in _SHELLS:
+        return None
+    return ("command", 2) if len(command) >= 3 else ("args", 2 - len(command))
+
+
+def _has_shutdown_flag(tokens: list[Any]) -> bool:
+    return any(str(item) == _SHUTDOWN_FLAG or str(item).startswith(f"{_SHUTDOWN_FLAG}=") for item in tokens)
+
+
+def _apply_shutdown_timeout(container: dict[str, Any]) -> int | None:
+    """Add --shutdown-timeout only where the shared vLLM invocation parser will see it."""
+    existing = _existing_shutdown_timeout(container)
+    timeout = max(existing or 0, MODEL_SHUTDOWN_TIMEOUT_SECONDS)
+    label = str(container.get("name") or "<unnamed>")
+    try:
+        current = vllm_argument_value(container, {_SHUTDOWN_FLAG}, label)
+    except ValueError as error:
+        logger.warning("Cannot safely apply %s to %s: %s", _SHUTDOWN_FLAG, label, error)
+        return existing
+    if current is not None and not current.isdigit():
+        logger.warning("Keeping non-literal %s=%s for %s", _SHUTDOWN_FLAG, current, label)
+        return None
+
+    original = {key: copy.deepcopy(container[key]) for key in ("command", "args") if key in container}
+    slot = _shell_script_slot(container)
+    if slot is not None:
+        field, index = slot
+        values = list(container[field])
+        values[index] = set_vllm_shell_argument(str(values[index]), "shutdown-timeout", timeout)
+        container[field] = values
+    else:
+        command = list(container.get("command") or [])
+        args = list(container.get("args") or [])
+        command_has_flag = _has_shutdown_flag(command)
+        if command_has_flag:
+            container["command"] = set_vllm_argument(command, "shutdown-timeout", timeout)
+        if not command_has_flag or _has_shutdown_flag(args):
+            container["args"] = set_vllm_argument(args, "shutdown-timeout", timeout)
+
+    try:
+        applied = vllm_argument_value(container, {_SHUTDOWN_FLAG}, label)
+    except ValueError:
+        applied = None
+    if applied == str(timeout):
+        return timeout
+    for key in ("command", "args"):
+        container.pop(key, None)
+    container.update(original)
+    logger.warning("Cannot verify %s=%s for %s; leaving the invocation unchanged", _SHUTDOWN_FLAG, timeout, label)
+    return existing
+
+
+def _ensure_prestop(container: dict[str, Any]) -> str:
+    lifecycle = container.get("lifecycle")
+    if lifecycle is None:
+        container["lifecycle"] = {
+            "preStop": {"exec": {"command": ["/bin/sh", "-c", f"sleep {MODEL_PRESTOP_SLEEP_SECONDS}"]}}
+        }
+        return "added"
+    if isinstance(lifecycle, dict) and "preStop" not in lifecycle:
+        lifecycle["preStop"] = {"exec": {"command": ["/bin/sh", "-c", f"sleep {MODEL_PRESTOP_SLEEP_SECONDS}"]}}
+        return "added"
+    return "preserved"
+
+
+def _update_kv_transfer_policy(raw: str) -> tuple[str, str]:
+    try:
+        config = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw, "invalid"
+    if not isinstance(config, dict):
+        return raw, "invalid"
+    if config.get("kv_load_failure_policy") == KV_LOAD_FAILURE_POLICY:
+        return raw, "unchanged"
+    config["kv_load_failure_policy"] = KV_LOAD_FAILURE_POLICY
+    return json.dumps(config, separators=(",", ":")), "changed"
+
+
+def _apply_kv_transfer_config(container: dict[str, Any], label: str) -> tuple[int, int, list[str]]:
+    detected = 0
+    updated = 0
+    warnings: list[str] = []
+    pattern = re.compile(r"(--kv-transfer-config(?:=|\s+))(?:'([^']*)'|\"([^\"]*)\"|(\S+))")
+
+    def update(raw: str) -> str:
+        nonlocal detected, updated
+        detected += 1
+        next_value, status = _update_kv_transfer_policy(raw)
+        if status == "changed":
+            updated += 1
+            return next_value
+        if status == "invalid":
+            warnings.append(f"{label}: --kv-transfer-config is not a JSON object; left unchanged.")
+        return raw
+
+    def update_shell(command: str) -> str:
+        def replace(match: re.Match[str]) -> str:
+            raw = match.group(2) or match.group(3) or match.group(4) or ""
+            next_value = update(raw)
+            if next_value == raw:
+                return match.group(0)
+            return f"{match.group(1)}{shlex.quote(next_value)}"
+
+        return pattern.sub(replace, command)
+
+    def update_list(items: list[Any]) -> None:
+        for index, item in enumerate(items):
+            if not isinstance(item, str):
+                continue
+            if item == "--kv-transfer-config":
+                if index + 1 < len(items):
+                    items[index + 1] = update(str(items[index + 1]))
+            elif item.startswith("--kv-transfer-config="):
+                raw = item.split("=", 1)[1]
+                next_value = update(raw)
+                if next_value != raw:
+                    items[index] = f"--kv-transfer-config={next_value}"
+            elif "--kv-transfer-config" in item:
+                next_value = update_shell(item)
+                if next_value != item:
+                    items[index] = next_value
+
+    command = container.get("command")
+    if isinstance(command, str):
+        container["command"] = update_shell(command)
+    elif isinstance(command, list):
+        update_list(command)
+    args = container.get("args")
+    if isinstance(args, str):
+        container["args"] = update_shell(args)
+    elif isinstance(args, list):
+        update_list(args)
+    return detected, updated, warnings
+
+
+def _ensure_termination_grace_period(pod: dict[str, Any], required_seconds: int) -> bool:
+    current = _integer(pod.get("terminationGracePeriodSeconds"))
+    if current is not None and current >= required_seconds:
+        return False
+    pod["terminationGracePeriodSeconds"] = required_seconds
+    return True
+
+
+def _graceful_shutdown_pod_specs(document: dict[str, Any]) -> list[dict[str, Any]]:
+    pods = list(_pod_specs(document))
+    if document.get("kind") != "DisaggregatedSet":
+        return pods
+    for role in (document.get("spec") or {}).get("roles") or []:
+        template = (role.get("spec") or {}).get("leaderWorkerTemplate") or {}
+        for key in ("leaderTemplate", "workerTemplate"):
+            spec = (template.get(key) or {}).get("spec")
+            if isinstance(spec, dict):
+                pods.append(spec)
+    return pods
+
+
+def prepare_graceful_shutdown_manifest(manifest: str) -> tuple[str, dict[str, Any]]:
+    documents = list(yaml.safe_load_all(manifest))
+    entries: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    kv_detected = 0
+    kv_updated = 0
+
+    def visit(document: Any) -> None:
+        nonlocal kv_detected, kv_updated
+        if not isinstance(document, dict):
+            return
+        if document.get("kind") == "List":
+            for item in document.get("items") or []:
+                visit(item)
+            return
+        identity = f"{document.get('kind')}/{document.get('metadata', {}).get('name', '<unnamed>')}"
+        for pod in _graceful_shutdown_pod_specs(document):
+            for container in pod.get("containers") or []:
+                label = f"{identity}/{container.get('name', '<unnamed>')}"
+                detected, updated, kv_warnings = _apply_kv_transfer_config(container, label)
+                kv_detected += detected
+                kv_updated += updated
+                warnings.extend(kv_warnings)
+            model_containers = [
+                container for container in pod.get("containers") or [] if _is_model_container(container)
+            ]
+            if not model_containers:
+                continue
+            pod_entries: list[dict[str, Any]] = []
+            longest_shutdown_timeout = 0
+            for container in model_containers:
+                runtime = _runtime_kind(container)
+                label = f"{identity}/{container.get('name', '<unnamed>')}"
+                entry: dict[str, Any] = {
+                    "resource": identity,
+                    "container": container.get("name"),
+                    "runtime": runtime,
+                }
+                if runtime == "vllm":
+                    shutdown_timeout = _apply_shutdown_timeout(container)
+                    if shutdown_timeout is not None:
+                        longest_shutdown_timeout = max(longest_shutdown_timeout, shutdown_timeout)
+                    entry["shutdownTimeoutSeconds"] = shutdown_timeout
+                    if shutdown_timeout is None:
+                        warnings.append(f"{label}: could not safely apply vLLM --shutdown-timeout")
+                elif runtime == "sglang":
+                    warnings.append(
+                        f"{label}: SGLang does not expose vLLM --shutdown-timeout; "
+                        "only endpoint removal and the termination grace period apply."
+                    )
+                entry["preStop"] = _ensure_prestop(container)
+                pod_entries.append(entry)
+            required_grace = max(
+                MODEL_TERMINATION_GRACE_PERIOD_SECONDS,
+                longest_shutdown_timeout + MODEL_PRESTOP_SLEEP_SECONDS + 10 if longest_shutdown_timeout else 0,
+            )
+            _ensure_termination_grace_period(pod, required_grace)
+            for entry in pod_entries:
+                entry["terminationGracePeriodSeconds"] = required_grace
+            entries.extend(pod_entries)
+
+    for document in documents:
+        visit(document)
+    report = {
+        "kvLoadFailurePolicy": KV_LOAD_FAILURE_POLICY,
+        "kvTransferConfigsDetected": kv_detected,
+        "kvTransferConfigsUpdated": kv_updated,
+        "shutdownTimeoutSeconds": MODEL_SHUTDOWN_TIMEOUT_SECONDS,
+        "terminationGracePeriodSeconds": MODEL_TERMINATION_GRACE_PERIOD_SECONDS,
+        "preStopSleepSeconds": MODEL_PRESTOP_SLEEP_SECONDS,
+        "containers": entries,
+        "warnings": warnings,
+    }
+    if not entries:
+        return manifest, report
+    return yaml.safe_dump_all(documents, sort_keys=False), report
+
+
+def prepare_single_slice_disaggregated_set_manifest(manifest: str) -> tuple[str, dict[str, Any]]:
+    documents = list(yaml.safe_load_all(manifest))
+    disaggregated_sets = 0
+    adjusted = 0
+
+    def visit(document: Any) -> None:
+        nonlocal disaggregated_sets, adjusted
+        if not isinstance(document, dict):
+            return
+        if document.get("kind") == "List":
+            for item in document.get("items") or []:
+                visit(item)
+            return
+        if document.get("kind") != "DisaggregatedSet":
+            return
+        disaggregated_sets += 1
+        spec = document.get("spec")
+        if not isinstance(spec, dict):
+            return
+        if spec.get("slices") != 1:
+            spec["slices"] = 1
+            adjusted += 1
+
+    for document in documents:
+        visit(document)
+    report = {
+        "slices": 1,
+        "disaggregatedSets": disaggregated_sets,
+        "adjusted": adjusted,
+    }
+    if not adjusted:
+        return manifest, report
+    return yaml.safe_dump_all(documents, sort_keys=False), report
+
+
+def prepare_single_slice_disaggregated_set(
+    artifact: GuideDeploymentArtifact, output_root: Path
+) -> GuideDeploymentArtifact:
+    if not artifact.manifest_ref:
+        return artifact
+    reference = Path(artifact.manifest_ref)
+    directory_artifact = reference.is_dir()
+    path = reference / "manifest.yaml" if directory_artifact else reference
+    if not path.is_file():
+        return artifact
+    manifest = path.read_text(encoding="utf-8")
+    rendered, report = prepare_single_slice_disaggregated_set_manifest(manifest)
+    if not report["disaggregatedSets"]:
+        return artifact
+    if report["adjusted"]:
+        logger.warning(
+            "Guide %s: forced DisaggregatedSet slices to 1 (Lens supports single-slice manual scaling)",
+            artifact.guide_id,
+        )
+    checksum = text_checksum(rendered)
+    if rendered != manifest:
+        if directory_artifact:
+            path.write_text(rendered, encoding="utf-8")
+        else:
+            directory = output_root / checksum.removeprefix("sha256:")
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / "manifest.yaml"
+            if path.is_file() and path.read_text(encoding="utf-8") != rendered:
+                raise ValueError("checksum-addressed DisaggregatedSet manifest drift detected")
+            path.write_text(rendered, encoding="utf-8")
+            register_artifacts(
+                directory,
+                owner_type="deployment-manifest",
+                owner_id=checksum.removeprefix("sha256:"),
+                source_version=artifact.source_ref,
+                retention_class="configuration",
+            )
+    return replace(
+        artifact,
+        manifest_ref=str(reference if directory_artifact else path),
+        manifest_checksum=artifact.manifest_checksum if directory_artifact else checksum,
+        artifact_hash=stable_hash({"provider": artifact.artifact_hash, "disaggregatedSet": report}),
+        deployment_contract={**artifact.deployment_contract, "disaggregatedSet": report},
+    )
+
+
+def prepare_graceful_shutdown(artifact: GuideDeploymentArtifact, output_root: Path) -> GuideDeploymentArtifact:
+    if not artifact.manifest_ref:
+        return artifact
+    reference = Path(artifact.manifest_ref)
+    directory_artifact = reference.is_dir()
+    path = reference / "manifest.yaml" if directory_artifact else reference
+    if not path.is_file():
+        return artifact
+    manifest = path.read_text(encoding="utf-8")
+    rendered, report = prepare_graceful_shutdown_manifest(manifest)
+    if not report["containers"]:
+        return artifact
+    for warning in report["warnings"]:
+        logger.warning("Guide %s: %s", artifact.guide_id, warning)
+    checksum = text_checksum(rendered)
+    if rendered != manifest:
+        if directory_artifact:
+            path.write_text(rendered, encoding="utf-8")
+        else:
+            directory = output_root / checksum.removeprefix("sha256:")
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / "manifest.yaml"
+            if path.is_file() and path.read_text(encoding="utf-8") != rendered:
+                raise ValueError("checksum-addressed graceful-shutdown manifest drift detected")
+            path.write_text(rendered, encoding="utf-8")
+            register_artifacts(
+                directory,
+                owner_type="deployment-manifest",
+                owner_id=checksum.removeprefix("sha256:"),
+                source_version=artifact.source_ref,
+                retention_class="configuration",
+            )
+    return replace(
+        artifact,
+        manifest_ref=str(reference if directory_artifact else path),
+        manifest_checksum=artifact.manifest_checksum if directory_artifact else checksum,
+        artifact_hash=stable_hash({"provider": artifact.artifact_hash, "gracefulShutdown": report}),
+        deployment_contract={**artifact.deployment_contract, "gracefulShutdown": report},
+    )
 
 
 class ConfigurationManifestAdapter:
@@ -151,6 +577,8 @@ class ConfigurationManifestAdapter:
                 manifest_ref=str(isolated),
                 artifact_hash=stable_hash({"provider_artifact": artifact.artifact_hash, "overlay": str(isolated)}),
             )
+        artifact = prepare_graceful_shutdown(artifact, self._output_root)
+        artifact = prepare_single_slice_disaggregated_set(artifact, self._output_root)
         artifact = prepare_shared_memory(artifact, self._output_root, exact=self._is_exact(overrides))
         if "_model_cache_dependencies" in overrides:
             from llm_d_lens.deploy.providers.storage_mount import validate_cached_model_arguments

@@ -72,6 +72,7 @@ export function DeploymentDetailsModal({ deployment, clusterNameById = {}, onClo
 
     const isFailed = deployment.status === 'failed' || Boolean(deployment.failure);
     const failure = deployment.failure;
+    const scaleSlices = Number(deployment.scale?.slices) || 1;
     const customParams = Array.isArray(deployment.custom_parameters) ? deployment.custom_parameters : [];
 
     const storageDetail = deployment.storage_volume_id
@@ -155,7 +156,15 @@ export function DeploymentDetailsModal({ deployment, clusterNameById = {}, onClo
                     <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
                         <Fact label="Model Name" value={deployment.model} />
                         <Fact label="Backend Engine" value={deployment.backend || 'vLLM'} />
-                        <Fact label="Replicas" value={deployment.replicas} />
+                        <Fact
+                            label={deployment.scale?.prefillReplicas != null
+                                ? `Replicas (P / D${scaleSlices > 1 ? ' per slice' : ''})`
+                                : 'Replicas'}
+                            value={deployment.scale?.prefillReplicas != null
+                                ? `${deployment.scale.prefillReplicas} / ${deployment.scale.decodeReplicas ?? deployment.replicas ?? '—'}`
+                                : deployment.replicas}
+                        />
+                        {scaleSlices > 1 && <Fact label="Slices" value={scaleSlices} />}
                         <Fact label="Tensor Parallel Size" value={deployment.tensor_parallel_size} />
                         <Fact label="Max Model Length" value={deployment.max_model_len} />
                         <Fact label="GPU Memory Utilization" value={deployment.gpu_memory_utilization} />

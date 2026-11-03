@@ -23,7 +23,7 @@ const virtualenvPython = path.join(root, '.venv/bin/python');
 const python = process.env.PRISM_PYTHON_BIN || (existsSync(virtualenvPython) ? virtualenvPython : 'python3');
 const args = process.argv.slice(2);
 if (args.some(argument => !['--check', '--json'].includes(argument))) {
-    console.error('Usage: node scripts/generate-mcp-tools.mjs [--check] [--json]');
+    console.error('Usage: node hack/generate-mcp-tools.mjs [--check] [--json]');
     process.exit(2);
 }
 

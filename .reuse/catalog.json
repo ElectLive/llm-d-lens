@@ -1466,23 +1466,23 @@
     },
     {
       "id": "reuse-registration-review",
-      "path": "tools/reuse/registration.mjs",
+      "path": "hack/reuse/registration.mjs",
       "symbols": [
         "registrationCandidates"
       ],
       "purpose": "Discover changed public declarations for catalog registration review.",
       "boundaries": "Advisory JS/TS export and Python top-level function/class discovery, not exhaustive API analysis. No task records or exclusion ledger; catalog remains curated.",
       "examples": [
-        "tools/reuse/cli.mjs"
+        "hack/reuse/cli.mjs"
       ],
       "tests": [
-        "tools/reuse/repository.test.mjs",
-        "tools/reuse/cli.test.mjs"
+        "hack/reuse/repository.test.mjs",
+        "hack/reuse/cli.test.mjs"
       ]
     },
     {
       "id": "reuse-decision-scope",
-      "path": "tools/reuse/decisions.mjs",
+      "path": "hack/reuse/decisions.mjs",
       "symbols": [
         "readDecisions",
         "evidenceChanged"
@@ -1490,15 +1490,15 @@
       "purpose": "Read existing decisions without creating or resolving audit records.",
       "boundaries": "Existing pending decisions still return exit 2; malformed records fail checks. Historical decisions with changed evidence are reported, never treated as new approval.",
       "examples": [
-        "tools/reuse/cli.mjs"
+        "hack/reuse/cli.mjs"
       ],
       "tests": [
-        "tools/reuse/cli.test.mjs"
+        "hack/reuse/cli.test.mjs"
       ]
     },
     {
       "id": "reuse-file-retrieval",
-      "path": "tools/reuse/search.mjs",
+      "path": "hack/reuse/search.mjs",
       "symbols": [
         "searchDocuments",
         "updateVectors",
@@ -1509,11 +1509,11 @@
       "purpose": "Local multilingual capability retrieval with configurable distinct-file recall.",
       "boundaries": "Scores are similarity, not equivalence; chunk ranking only sees selected files. Default six, configurable 1–100. Lexical mode is separate; offline mode requires cached model. Lexical search is the default. Semantic detail caches retain unchanged files across queries and remove changed/deleted source entries.",
       "examples": [
-        "tools/reuse/cli.mjs"
+        "hack/reuse/cli.mjs"
       ],
       "tests": [
-        "tools/reuse/search.test.mjs",
-        "tools/reuse/semantic.smoke.mjs"
+        "hack/reuse/search.test.mjs",
+        "hack/reuse/semantic.smoke.mjs"
       ]
     },
     {
@@ -1643,7 +1643,7 @@
       "boundaries": "Only when auth is enabled and the users table is empty; gated by PRISM_ADMIN_AUTOSEED. Generated passwords go to $LENS_DATA_DIR/credentials/initial_admin.txt (mode 600) and are removed after the password changes. Env-supplied passwords are never written to disk. Account is created with must_change_password=true.",
       "examples": [
         "apps/backend/src/llm_d_lens/api/main.py",
-        "scripts/lens-local.sh"
+        "hack/lens-local.sh"
       ],
       "tests": [
         "apps/backend/tests/unit/auth/test_bootstrap.py",
@@ -2728,7 +2728,7 @@
     },
     {
       "id": "repository-english-check",
-      "path": "tools/check-english.mjs",
+      "path": "hack/check-english.mjs",
       "symbols": [
         "checkEnglish"
       ],
@@ -2738,7 +2738,7 @@
         ".github/workflows/ci-pr-checks.yaml"
       ],
       "tests": [
-        "tools/check-english.test.mjs"
+        "hack/check-english.test.mjs"
       ]
     },
     {
@@ -3171,7 +3171,7 @@
     },
     {
       "id": "reuse-git-history",
-      "path": "tools/reuse/repository.mjs",
+      "path": "hack/reuse/repository.mjs",
       "symbols": [
         "SOURCE_ROOTS",
         "revisionFiles",
@@ -3181,25 +3181,25 @@
       "purpose": "Read binary-safe historical Git blobs in a batch and compare source duplication.",
       "boundaries": "Local Git-visible tooling; source roots include monorepo workspaces and historical aliases. History preserves filenames and modes. Empty changed-source sets skip tokenization. Similarity remains advisory.",
       "examples": [
-        "tools/reuse/cli.mjs"
+        "hack/reuse/cli.mjs"
       ],
       "tests": [
-        "tools/reuse/repository.test.mjs"
+        "hack/reuse/repository.test.mjs"
       ]
     },
     {
       "id": "documentation-file-links",
-      "path": "tools/check-docs.mjs",
+      "path": "hack/check-docs.mjs",
       "symbols": [
         "checkDocs"
       ],
       "purpose": "Check local Markdown and MDX file targets for selected documentation files.",
       "boundaries": "No network access; extensionless routes, anchors and MDX compilation require the full Docusaurus build.",
       "examples": [
-        "tools/check-docs.test.mjs"
+        "hack/check-docs.test.mjs"
       ],
       "tests": [
-        "tools/check-docs.test.mjs"
+        "hack/check-docs.test.mjs"
       ]
     },
     {

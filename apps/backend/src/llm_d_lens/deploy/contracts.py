@@ -106,6 +106,21 @@ class DeploymentMetadataUpdateRequest(BaseModel):
         )
 
 
+class DeploymentScaleRequest(BaseModel):
+    """Requested live model-server replica counts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prefill_replicas: int | None = Field(default=None, ge=1, le=100)
+    decode_replicas: int | None = Field(default=None, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def require_at_least_one_field(self) -> DeploymentScaleRequest:
+        if self.prefill_replicas is None and self.decode_replicas is None:
+            raise ValueError("at least one of prefill_replicas or decode_replicas is required")
+        return self
+
+
 class DeployableConfiguration(BaseModel):
     """Immutable Configuration output accepted by the Deploy module."""
 

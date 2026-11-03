@@ -14,16 +14,18 @@
 # `llm_d_router` is one release of llm-d-router that provides all three router
 # artifacts: the standalone chart, the EPP image and the P/D disaggregation
 # sidecar image.
-llm_d: v0.10.0
+llm_d: v1.0.0
 #: Minimum Kubernetes version this stack runs on. llm-d's gateway prerequisites
 #: require one of the three most recent Kubernetes releases (Envoy AI Gateway
-#: names 1.32 explicitly); the pinned Gateway API v1.5.x CRDs need >= 1.31.
+#: names 1.32 explicitly); the pinned Gateway API v1.6.x CRDs need >= 1.31.
 min_k8s_version: v1.32.0
-llm_d_router: v0.11.0
-llm_d_lensmark: v0.8.0
-llm_d_inference_payload_processor: v0.1.0
-k8s_gateway_api: v1.5.1
-k8s_gateway_api_inference_extension: v1.5.0
+llm_d_router: v1.0.0
+llm_d_lensmark: v1.0.0
+llm_d_inference_payload_processor: v1.0.0
+k8s_gateway_api: v1.6.2
+k8s_gateway_api_inference_extension: v1.6.2
+#: LeaderWorkerSet provides the DisaggregatedSet API used by the P/D Guide.
+k8s_lws: v1.0.0
 gateway_providers:
   # Istio versions/tags carry no leading "v" (chart and image tags are "1.29.4").
   istio: 1.29.4

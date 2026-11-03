@@ -109,8 +109,8 @@ From the repository root, use the local source launcher instead of the
 Ubuntu installer's packaged deployment:
 
 ```bash
-scripts/lens-local.sh start
-scripts/lens-local.sh status
+hack/lens-local.sh start
+hack/lens-local.sh status
 ```
 
 The launcher prepares Node.js, npm dependencies and the Python environment,
@@ -120,13 +120,13 @@ command below. `npm run dev` and `npm run dev:web` start both development proces
 After `npm run build`, `npm start` serves the built frontend, API and MCP from
 the Python process on one port. Node is needed for frontend builds, not production serving.
 
-`scripts/lens-local.sh start` and `restart` regenerate and validate the reuse map before
+`hack/lens-local.sh start` and `restart` regenerate and validate the reuse map before
 changing services. Invalid registrations block startup without stopping existing
 services; pending user decisions warn without being resolved automatically.
 To constrain deployments to a node, pass `--target-node NODE` and optionally
 `--kubeconfig FILE`, or set `TARGET_NODE` and `KUBECONFIG`. No target-specific
 configuration file is needed. See the [CLI Reference](/cli-reference) for
-preflight requirements and every `scripts/lens-local.sh` subcommand.
+preflight requirements and every `hack/lens-local.sh` subcommand.
 
 ## Build and test
 

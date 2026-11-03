@@ -22,14 +22,20 @@ import { cn } from '../lib/cn';
 const TONES = {
     cyan: 'text-cyan-600 dark:text-cyan-400',
     sky: 'text-sky-600 dark:text-sky-400/90',
+    blue: 'text-blue-600 dark:text-blue-400',
     emerald: 'text-emerald-600 dark:text-emerald-400/90',
     violet: 'text-violet-600 dark:text-violet-400/90',
     slate: 'text-slate-500',
 };
 
-export function SectionLabel({ tone = 'cyan', className, children }) {
+export function SectionLabel({ tone = 'cyan', uppercase = true, className, children }) {
     return (
-        <div className={cn('text-[10px] font-extrabold uppercase tracking-widest mb-2', TONES[tone], className)}>
+        <div className={cn(
+            'text-[10px] font-extrabold mb-2',
+            uppercase ? 'uppercase tracking-widest' : 'tracking-wide',
+            TONES[tone],
+            className,
+        )}>
             {children}
         </div>
     );

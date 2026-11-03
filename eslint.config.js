@@ -7,7 +7,7 @@ import tseslint from 'typescript-eslint'
 export default tseslint.config(
   { ignores: ['**/dist/**', 'docs/**/.docusaurus/**', 'docs/**/build/**', '.venv/**'] },
   {
-    files: ['tools/reuse/**/*.mjs'],
+    files: ['hack/reuse/**/*.mjs'],
     extends: [js.configs.recommended],
     languageOptions: { ecmaVersion: 'latest', globals: globals.node },
     rules: { 'no-unused-vars': ['error', { varsIgnorePattern: '^_', argsIgnorePattern: '^_' }] },

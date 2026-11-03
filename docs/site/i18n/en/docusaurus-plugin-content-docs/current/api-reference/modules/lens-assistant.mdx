@@ -176,7 +176,7 @@ The Python router rejects session termination because it keeps no transport sess
   </TabItem>
 </Tabs>
 
-`llm_d_lens.mcp.catalog` derives tools from the FastAPI OpenAPI schema and combines them with 25 special definitions in `llm_d_lens/mcp/definitions.json`. `node scripts/generate-mcp-tools.mjs --check` validates this catalog without generating Node files. `llm_d_lens.mcp.tools` invokes the canonical REST routes through an in-process ASGI client, preserving authentication, CSRF and resource-scope checks.
+`llm_d_lens.mcp.catalog` derives tools from the FastAPI OpenAPI schema and combines them with 25 special definitions in `llm_d_lens/mcp/definitions.json`. `node hack/generate-mcp-tools.mjs --check` validates this catalog without generating Node files. `llm_d_lens.mcp.tools` invokes the canonical REST routes through an in-process ASGI client, preserving authentication, CSRF and resource-scope checks.
 
 ## What the MCP tools call
 

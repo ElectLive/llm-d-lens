@@ -12,8 +12,8 @@ verification and unresolved decisions. Paths below are repo-relative.
 
 | Scope | Inspect before changing |
 | --- | --- |
-| Local service start/restart | `scripts/lens-local.sh`, `scripts/run-backend.sh`, `package.json` |
-| Containers | The relevant Dockerfile under the root or `docker/` |
+| Local service start/restart | `hack/lens-local.sh`, `hack/run-backend.sh`, `package.json` |
+| Containers | The relevant Dockerfile under `deploy/` (built with the repository root as context) |
 | Cluster provisioning/deployment | `apps/backend/src/llm_d_lens/cluster/`, `apps/backend/src/llm_d_lens/deploy/`, the manifest/template used by the caller |
 | CI | The relevant workflow under `.github/workflows/` |
 
@@ -52,13 +52,13 @@ compatibility. The Backend skill owns the complete current boundary.
 
 ## Local development
 
-The normal user entry is `./lens-local.sh restart` from `scripts/`, equivalent to
-`scripts/lens-local.sh restart` from the repository root. Inspect `scripts/lens-local.sh status`
+The normal user entry is `./lens-local.sh restart` from `hack/`, equivalent to
+`hack/lens-local.sh restart` from the repository root. Inspect `hack/lens-local.sh status`
 and `$LENS_LOG_DIR/dev/` (default `~/.local/state/lens/logs/dev/`)
 for service state and failures.
 
 Use frontend hot reload for source/style edits. For running services that need a
-restart, use `scripts/lens-local.sh restart frontend|server|backend`; use `restart all`
+restart, use `hack/lens-local.sh restart frontend|server|backend`; use `restart all`
 for shared environment, port or API/MCP changes. Do not start the application
 for tooling, tests or documentation-only work.
 
@@ -70,15 +70,15 @@ does not certify test results or produce an audit report.
 For Docker-specific work, inspect actual service commands, mounts, ports and
 runtime versions before choosing a launch command. The root image uses Node only
 to build the frontend; its Python runtime serves the UI, API and MCP on one port.
-`scripts/lens-local.sh` requires Node 22 or newer for frontend development.
+`hack/lens-local.sh` requires Node 22 or newer for frontend development.
 The MCP catalog is generated in Python from route metadata and packaged definitions;
-`scripts/generate-mcp-tools.mjs --check` validates it without a Node server artifact.
+`hack/generate-mcp-tools.mjs --check` validates it without a Node server artifact.
 Do not assume a host Python environment or initialized database exists in a container.
 
 ## Storage paths in launchers and containers
 
 Follow the [storage scheme](../../../docs/design/storage-layout.md). Shell launchers
-reuse `scripts/storage-env.sh`; Python and Node services use their shared path
+reuse `hack/storage-env.sh`; Python and Node services use their shared path
 helpers. Keep service environments and volume mounts consistent for shared files.
 Resolve remote cache roots on the remote host rather than inserting the local
 user's home path. Preserve explicit external source and model-volume inputs.

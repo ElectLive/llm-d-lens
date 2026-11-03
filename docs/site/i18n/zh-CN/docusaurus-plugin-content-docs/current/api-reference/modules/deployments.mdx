@@ -984,6 +984,52 @@ if context is not None:
   </TabItem>
 </Tabs>
 
+### 扩缩容部署执行
+
+修改处于就绪或失败状态的执行的 Prefill 和/或 Decode 模型服务器实时副本数。此操作只修改 Kubernetes 副本数，不改变已保存的配置。支持 Deployment 和 DisaggregatedSet 工作负载。DisaggregatedSet 扩缩容只修改角色副本数，不修改 `spec.slices`；Lens 新建的 DisaggregatedSet 固定使用 `slices: 1`。
+
+<Tabs>
+  <TabItem value="rest-api" label="REST API">
+    **`POST /api/v1/deployments/executions/{execution_id}/scale`**
+
+    请求：
+
+    ```json
+    {
+      "prefill_replicas": 1,
+      "decode_replicas": 2
+    }
+    ```
+
+    - 路径参数：`execution_id`（`string`，必需）
+    - 请求体字段：`prefill_replicas` 和 `decode_replicas`（`integer`，可选，`1..100`）；至少提供一个。
+    - 只修改提供的角色。P/D 部署同时使用两个字段；聚合部署使用 `decode_replicas`。
+    - 执行不是就绪或失败状态时返回 `409`；工作负载不受支持或角色不存在时返回 `422`；扩缩容部分成功时返回 `502`。
+
+    成功：HTTP `200`，返回更新后的执行 payload。`scale` 包含 `prefillReplicas`、`decodeReplicas` 和 `manual`。
+  </TabItem>
+  <TabItem value="python-api" label="Python API">
+
+```python
+import asyncio
+
+from llm_d_lens.deploy.contracts import DeploymentScaleRequest
+from llm_d_lens.deploy.executions import scale_deployment_execution
+
+
+async def main() -> None:
+    context = await scale_deployment_execution(
+        "execution-ready",
+        DeploymentScaleRequest(decode_replicas=2),
+    )
+    print(context.scale)
+
+
+asyncio.run(main())
+```
+  </TabItem>
+</Tabs>
+
 ### 获取执行的 Pod 状态
 
 获取一次部署执行所在命名空间中所有 Pod 的实时状态。

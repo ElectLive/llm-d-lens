@@ -466,6 +466,35 @@ async def read_cluster_crds(cluster_id: str) -> dict:
     return await gateway_crds.gateway_crds_status(cluster_id)
 
 
+@router.post(
+    "/clusters/{cluster_id}/lws",
+    summary="Install the pinned LeaderWorkerSet controller and DisaggregatedSet API.",
+    description=(
+        "Install or upgrade the LeaderWorkerSet controller pinned by the Lens stack profile, enabling "
+        "the DisaggregatedSet API used by the llm-d v1.0 P/D Guide. CRDs are applied server-side before "
+        "the Helm release is upgraded."
+    ),
+    operation_id="install_cluster_lws",
+)
+async def install_cluster_lws(cluster_id: str) -> dict:
+    registry.require_cluster(cluster_id)
+    return await service.install_lws(cluster_id)
+
+
+@router.get(
+    "/clusters/{cluster_id}/lws",
+    summary="Get LeaderWorkerSet controller and DisaggregatedSet API status.",
+    description=(
+        "Report whether the pinned LeaderWorkerSet CRD and controller are present on the cluster, "
+        "so the P/D Guide can create DisaggregatedSet resources."
+    ),
+    operation_id="get_cluster_lws",
+)
+async def read_cluster_lws(cluster_id: str) -> dict:
+    registry.require_cluster(cluster_id)
+    return await service.lws_status(cluster_id)
+
+
 @router.get(
     "/clusters/{cluster_id}/kubernetes-version",
     summary="Check a cluster's reachability and Kubernetes version against the stack minimum.",

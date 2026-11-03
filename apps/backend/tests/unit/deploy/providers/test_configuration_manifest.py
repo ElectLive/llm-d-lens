@@ -850,3 +850,541 @@ async def test_pd_manifest_ensures_storage_volume_pvc_before_delegate_lifecycle(
     assert ensure_calls == [(volume, "llm-d-bench-run", "d459a19d")]
     delegate.deploy.assert_awaited_once_with(artifact, context)
     assert result == {"namespace": "llm-d-bench-run"}
+
+
+def _vllm_deployment(name: str, *, args=None, shell_style: bool = False, grace=None, prestop=None):
+    container = {
+        "name": "modelserver",
+        "image": "vllm/vllm-openai:v1",
+        "command": ["/bin/sh", "-c"] if shell_style else ["vllm", "serve"],
+        "args": ["vllm serve model --max-model-len=4096"] if shell_style else ["model", "--max-model-len=4096"],
+    }
+    if args is not None:
+        container["args"] = args
+    if prestop is not None:
+        container["lifecycle"] = {"preStop": prestop}
+    pod = {"containers": [container]}
+    if grace is not None:
+        pod["terminationGracePeriodSeconds"] = grace
+    return {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {"name": name},
+        "spec": {"template": {"spec": pod}},
+    }
+
+
+def test_graceful_shutdown_manifest_applies_vllm_settings():
+    manifest = yaml.safe_dump_all(
+        [_vllm_deployment("decode"), _vllm_deployment("prefill", shell_style=True)],
+        sort_keys=False,
+    )
+
+    rendered, report = configuration_manifest.prepare_graceful_shutdown_manifest(manifest)
+
+    documents = list(yaml.safe_load_all(rendered))
+    for document in documents:
+        pod = document["spec"]["template"]["spec"]
+        assert pod["terminationGracePeriodSeconds"] == 120
+        container = pod["containers"][0]
+        assert container["lifecycle"]["preStop"]["exec"]["command"] == ["/bin/sh", "-c", "sleep 5"]
+
+    decode = documents[0]["spec"]["template"]["spec"]["containers"][0]
+    assert decode["args"] == ["model", "--max-model-len=4096", "--shutdown-timeout=90"]
+    prefill = documents[1]["spec"]["template"]["spec"]["containers"][0]
+    assert prefill["args"][0].endswith("--shutdown-timeout=90")
+    assert [entry["runtime"] for entry in report["containers"]] == ["vllm", "vllm"]
+    assert report["warnings"] == []
+
+
+def test_graceful_shutdown_manifest_patches_shell_command_script():
+    from llm_d_lens.configuration.manifest_facts import _invocation_tokens
+
+    document = _vllm_deployment("command-shell")
+    container = document["spec"]["template"]["spec"]["containers"][0]
+    container["command"] = ["/bin/sh", "-c", "vllm serve model --max-model-len=4096"]
+    container.pop("args")
+
+    rendered, report = configuration_manifest.prepare_graceful_shutdown_manifest(
+        yaml.safe_dump_all([document], sort_keys=False)
+    )
+
+    rendered_container = yaml.safe_load(rendered)["spec"]["template"]["spec"]["containers"][0]
+    assert rendered_container["command"][2].endswith("--shutdown-timeout=90")
+    assert not rendered_container.get("args")
+    assert report["containers"][0]["shutdownTimeoutSeconds"] == 90
+    assert "--shutdown-timeout=90" in _invocation_tokens(rendered_container, "command-shell")
+
+
+def test_graceful_shutdown_manifest_patches_python_module_invocation():
+    from llm_d_lens.configuration.manifest_facts import _invocation_tokens
+
+    document = _vllm_deployment("python-module")
+    container = document["spec"]["template"]["spec"]["containers"][0]
+    container["command"] = ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+    container["args"] = ["--model", "model"]
+
+    rendered, report = configuration_manifest.prepare_graceful_shutdown_manifest(
+        yaml.safe_dump_all([document], sort_keys=False)
+    )
+
+    rendered_container = yaml.safe_load(rendered)["spec"]["template"]["spec"]["containers"][0]
+    assert "--shutdown-timeout=90" in rendered_container["args"]
+    assert report["containers"][0]["shutdownTimeoutSeconds"] == 90
+    assert "--shutdown-timeout=90" in _invocation_tokens(rendered_container, "python-module")
+
+
+@pytest.mark.parametrize(
+    ("command", "args"),
+    [
+        (["/bin/sh", "-c"], ["exec vllm serve model \\\n  --tensor-parallel-size=4\n"]),
+        (["/bin/sh", "-c"], ['vllm serve model --host "$HOST_IP" --shutdown-timeout 30']),
+        (["vllm"], ["serve", "model"]),
+    ],
+)
+def test_graceful_shutdown_manifest_patches_recognizable_invocations(command, args):
+    from llm_d_lens.configuration.manifest_facts import vllm_argument_value
+
+    document = _vllm_deployment("recognizable")
+    container = document["spec"]["template"]["spec"]["containers"][0]
+    container["command"] = command
+    container["args"] = args
+
+    rendered, report = configuration_manifest.prepare_graceful_shutdown_manifest(
+        yaml.safe_dump_all([document], sort_keys=False)
+    )
+
+    rendered_container = yaml.safe_load(rendered)["spec"]["template"]["spec"]["containers"][0]
+    assert vllm_argument_value(rendered_container, {"--shutdown-timeout"}, "recognizable") == "90"
+    assert report["containers"][0]["shutdownTimeoutSeconds"] == 90
+    assert report["warnings"] == []
+
+
+def test_graceful_shutdown_manifest_keeps_non_literal_shutdown_timeout():
+    document = _vllm_deployment("variable-timeout")
+    container = document["spec"]["template"]["spec"]["containers"][0]
+    container["command"] = ["/bin/sh", "-c", "vllm serve model --shutdown-timeout=$TIMEOUT"]
+    container.pop("args")
+
+    rendered, report = configuration_manifest.prepare_graceful_shutdown_manifest(
+        yaml.safe_dump_all([document], sort_keys=False)
+    )
+
+    rendered_container = yaml.safe_load(rendered)["spec"]["template"]["spec"]["containers"][0]
+    assert rendered_container["command"][2] == "vllm serve model --shutdown-timeout=$TIMEOUT"
+    assert report["containers"][0]["shutdownTimeoutSeconds"] is None
+
+
+def test_graceful_shutdown_manifest_skips_unsafe_shell_command_with_warning():
+    document = _vllm_deployment("unsafe-shell")
+    container = document["spec"]["template"]["spec"]["containers"][0]
+    container["command"] = ["/bin/sh", "-c", "vllm serve model && echo done"]
+    container.pop("args")
+
+    rendered, report = configuration_manifest.prepare_graceful_shutdown_manifest(
+        yaml.safe_dump_all([document], sort_keys=False)
+    )
+
+    rendered_container = yaml.safe_load(rendered)["spec"]["template"]["spec"]["containers"][0]
+    assert rendered_container["command"] == ["/bin/sh", "-c", "vllm serve model && echo done"]
+    assert report["containers"][0]["shutdownTimeoutSeconds"] is None
+    assert any("could not safely apply" in warning for warning in report["warnings"])
+
+
+def test_graceful_shutdown_manifest_preserves_existing_values_and_handles_sglang():
+    manifest = yaml.safe_dump_all(
+        [
+            _vllm_deployment(
+                "decode",
+                args=["model", "--shutdown-timeout=180"],
+                grace=300,
+                prestop={"exec": {"command": ["custom-drain"]}},
+            ),
+            {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {"name": "sglang"},
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": [
+                                {
+                                    "name": "modelserver",
+                                    "image": "lmsysorg/sglang:latest",
+                                    "command": ["python", "-m", "sglang.launch_server"],
+                                    "args": ["--model", "test"],
+                                }
+                            ]
+                        }
+                    }
+                },
+            },
+        ],
+        sort_keys=False,
+    )
+
+    rendered, report = configuration_manifest.prepare_graceful_shutdown_manifest(manifest)
+
+    documents = list(yaml.safe_load_all(rendered))
+    decode_pod = documents[0]["spec"]["template"]["spec"]
+    decode = decode_pod["containers"][0]
+    assert decode_pod["terminationGracePeriodSeconds"] == 300
+    assert decode["args"] == ["model", "--shutdown-timeout=180"]
+    assert decode["lifecycle"]["preStop"]["exec"]["command"] == ["custom-drain"]
+    sglang = documents[1]["spec"]["template"]["spec"]["containers"][0]
+    assert not any("--shutdown-timeout" in str(item) for item in sglang["args"])
+    assert sglang["lifecycle"]["preStop"]["exec"]["command"] == ["/bin/sh", "-c", "sleep 5"]
+    assert report["containers"][0]["shutdownTimeoutSeconds"] == 180
+    assert report["containers"][1]["runtime"] == "sglang"
+    assert report["warnings"]
+
+
+def test_graceful_shutdown_manifest_expands_grace_for_longer_timeout():
+    manifest = yaml.safe_dump_all(
+        [_vllm_deployment("decode", args=["model", "--shutdown-timeout=180"])],
+        sort_keys=False,
+    )
+
+    rendered, report = configuration_manifest.prepare_graceful_shutdown_manifest(manifest)
+
+    pod = yaml.safe_load(rendered)["spec"]["template"]["spec"]
+    assert pod["terminationGracePeriodSeconds"] == 195
+    assert report["containers"][0]["terminationGracePeriodSeconds"] == 195
+
+
+def test_graceful_shutdown_manifest_is_idempotent():
+    manifest = yaml.safe_dump_all([_vllm_deployment("decode", shell_style=True)], sort_keys=False)
+
+    first, _ = configuration_manifest.prepare_graceful_shutdown_manifest(manifest)
+    second, _ = configuration_manifest.prepare_graceful_shutdown_manifest(first)
+
+    assert second == first
+
+
+def test_graceful_shutdown_manifest_covers_leader_worker_templates():
+    manifest = yaml.safe_dump_all(
+        [
+            {
+                "apiVersion": "llm-d.ai/v1alpha1",
+                "kind": "LeaderWorkerSet",
+                "metadata": {"name": "wide-ep"},
+                "spec": {
+                    "leaderWorkerTemplate": {
+                        "leaderTemplate": {
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "name": "modelserver-leader",
+                                        "image": "vllm/vllm-openai:v1",
+                                        "command": ["/bin/sh", "-c"],
+                                        "args": ["vllm serve model"],
+                                    }
+                                ]
+                            }
+                        },
+                        "workerTemplate": {
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "name": "modelserver-worker",
+                                        "image": "vllm/vllm-openai:v1",
+                                        "command": ["/bin/sh", "-c"],
+                                        "args": ["bash worker.sh"],
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                },
+            }
+        ],
+        sort_keys=False,
+    )
+
+    rendered, report = configuration_manifest.prepare_graceful_shutdown_manifest(manifest)
+
+    document = yaml.safe_load(rendered)
+    templates = document["spec"]["leaderWorkerTemplate"]
+    for key in ("leaderTemplate", "workerTemplate"):
+        assert templates[key]["spec"]["terminationGracePeriodSeconds"] == 120
+    leader = templates["leaderTemplate"]["spec"]["containers"][0]
+    worker = templates["workerTemplate"]["spec"]["containers"][0]
+    assert leader["args"][0].endswith("--shutdown-timeout=90")
+    assert not any("--shutdown-timeout" in str(item) for item in worker["args"])
+    assert len(report["containers"]) == 2
+
+
+def test_graceful_shutdown_manifest_covers_disaggregated_set_roles():
+    def role(name):
+        return {
+            "name": name,
+            "spec": {
+                "leaderWorkerTemplate": {
+                    "size": 1,
+                    "workerTemplate": {
+                        "spec": {
+                            "containers": [
+                                {
+                                    "name": "modelserver",
+                                    "image": "vllm/vllm-openai:v1",
+                                    "command": ["vllm", "serve"],
+                                    "args": ["model"],
+                                }
+                            ]
+                        }
+                    },
+                }
+            },
+        }
+
+    manifest = yaml.safe_dump(
+        {
+            "apiVersion": "disaggregatedset.x-k8s.io/v1",
+            "kind": "DisaggregatedSet",
+            "metadata": {"name": "pd-disagg"},
+            "spec": {"roles": [role("prefill"), role("decode")]},
+        },
+        sort_keys=False,
+    )
+
+    rendered, report = configuration_manifest.prepare_graceful_shutdown_manifest(manifest)
+
+    document = yaml.safe_load(rendered)
+    for item in document["spec"]["roles"]:
+        pod = item["spec"]["leaderWorkerTemplate"]["workerTemplate"]["spec"]
+        assert pod["terminationGracePeriodSeconds"] == 120
+        assert pod["containers"][0]["args"][-1] == "--shutdown-timeout=90"
+    assert [entry["container"] for entry in report["containers"]] == ["modelserver", "modelserver"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("directory", [False, True])
+async def test_render_applies_graceful_shutdown_to_delegate_manifest(monkeypatch, tmp_path, directory):
+    manifest = yaml.safe_dump_all([_vllm_deployment("decode")], sort_keys=False)
+    source = tmp_path / "source.yaml"
+    source.write_text(manifest, encoding="utf-8")
+    if directory:
+        overlay = tmp_path / "overlay"
+        overlay.mkdir()
+        (overlay / "manifest.yaml").write_text(manifest, encoding="utf-8")
+        (overlay / "kustomization.yaml").write_text("resources:\n- manifest.yaml\n", encoding="utf-8")
+        manifest_ref = str(overlay)
+    else:
+        manifest_ref = str(source)
+
+    delegate = SimpleNamespace(
+        render=AsyncMock(
+            return_value=GuideDeploymentArtifact(
+                guide_id="baseline-vllm",
+                artifact_hash="source",
+                manifest_ref=manifest_ref,
+                manifest_checksum="sha256:source",
+            )
+        )
+    )
+    monkeypatch.setattr(configuration_manifest, "configured_target_node", lambda: None)
+    adapter = ConfigurationManifestAdapter(delegate, _Runner(), "llmd-", 5, tmp_path / "output")
+
+    artifact = await adapter.render(GuideDefinition("baseline-vllm", "source", "hash", "stable"), {})
+
+    path = Path(artifact.manifest_ref)
+    if directory:
+        path = path / "manifest.yaml"
+    documents = [item for item in yaml.safe_load_all(path.read_text()) if isinstance(item, dict)]
+    deployment = next(item for item in documents if item.get("kind") == "Deployment")
+    pod = deployment["spec"]["template"]["spec"]
+    assert pod["terminationGracePeriodSeconds"] == 120
+    assert "--shutdown-timeout=90" in pod["containers"][0]["args"]
+    assert artifact.deployment_contract["gracefulShutdown"]["containers"]
+    if directory:
+        assert (overlay / "manifest.yaml").read_text(encoding="utf-8") == manifest
+    else:
+        assert source.read_text(encoding="utf-8") == manifest
+
+
+def test_graceful_shutdown_sets_kv_load_failure_policy_in_structured_args():
+    transfer = {
+        "kv_connector": "NixlConnector",
+        "kv_role": "kv_both",
+        "kv_load_failure_policy": "fail",
+        "kv_connector_extra_config": {"backends": ["UCX"]},
+    }
+    manifest = yaml.safe_dump_all(
+        [
+            _vllm_deployment(
+                "decode",
+                args=["model", "--kv-transfer-config", json.dumps(transfer)],
+            )
+        ],
+        sort_keys=False,
+    )
+
+    rendered, report = configuration_manifest.prepare_graceful_shutdown_manifest(manifest)
+
+    container = yaml.safe_load(rendered)["spec"]["template"]["spec"]["containers"][0]
+    index = container["args"].index("--kv-transfer-config")
+    updated = json.loads(container["args"][index + 1])
+    assert updated["kv_load_failure_policy"] == "recompute"
+    assert updated["kv_connector"] == "NixlConnector"
+    assert updated["kv_role"] == "kv_both"
+    assert updated["kv_connector_extra_config"] == {"backends": ["UCX"]}
+    assert report["kvTransferConfigsDetected"] == 1
+    assert report["kvTransferConfigsUpdated"] == 1
+    assert report["warnings"] == []
+
+
+def test_graceful_shutdown_sets_kv_load_failure_policy_in_shell_args():
+    manifest = yaml.safe_dump_all(
+        [
+            _vllm_deployment(
+                "prefill",
+                shell_style=True,
+                args=['vllm serve model --kv-transfer-config \'{"kv_connector":"NixlConnector","kv_role":"kv_both"}\''],
+            )
+        ],
+        sort_keys=False,
+    )
+
+    rendered, report = configuration_manifest.prepare_graceful_shutdown_manifest(manifest)
+
+    command = yaml.safe_load(rendered)["spec"]["template"]["spec"]["containers"][0]["args"][0]
+    assert "kv_load_failure_policy" in command
+    assert "recompute" in command
+    assert report["kvTransferConfigsDetected"] == 1
+    assert report["kvTransferConfigsUpdated"] == 1
+
+
+def test_graceful_shutdown_kv_policy_is_idempotent_and_preserved():
+    transfer = {"kv_connector": "NixlConnector", "kv_load_failure_policy": "recompute"}
+    manifest = yaml.safe_dump_all(
+        [
+            _vllm_deployment(
+                "decode",
+                args=["model", "--kv-transfer-config", json.dumps(transfer)],
+            )
+        ],
+        sort_keys=False,
+    )
+
+    first, first_report = configuration_manifest.prepare_graceful_shutdown_manifest(manifest)
+    second, second_report = configuration_manifest.prepare_graceful_shutdown_manifest(first)
+
+    assert second == first
+    assert first_report["kvTransferConfigsDetected"] == 1
+    assert first_report["kvTransferConfigsUpdated"] == 0
+    assert second_report["kvTransferConfigsUpdated"] == 0
+
+
+def test_graceful_shutdown_ignores_non_kv_and_invalid_transfer_configs():
+    without_kv = yaml.safe_dump_all([_vllm_deployment("decode")], sort_keys=False)
+    _, no_kv_report = configuration_manifest.prepare_graceful_shutdown_manifest(without_kv)
+    assert no_kv_report["kvTransferConfigsDetected"] == 0
+
+    invalid = yaml.safe_dump_all(
+        [
+            _vllm_deployment(
+                "decode",
+                args=["model", "--kv-transfer-config", "{not-json}"],
+            )
+        ],
+        sort_keys=False,
+    )
+    rendered, report = configuration_manifest.prepare_graceful_shutdown_manifest(invalid)
+    container = yaml.safe_load(rendered)["spec"]["template"]["spec"]["containers"][0]
+    index = container["args"].index("--kv-transfer-config")
+    assert container["args"][index + 1] == "{not-json}"
+    assert report["kvTransferConfigsDetected"] == 1
+    assert report["kvTransferConfigsUpdated"] == 0
+    assert "not a JSON object" in report["warnings"][0]
+
+
+def _disaggregated_set(slices):
+    return {
+        "apiVersion": "disaggregatedset.x-k8s.io/v1",
+        "kind": "DisaggregatedSet",
+        "metadata": {"name": "pd-disagg-xpu"},
+        "spec": {
+            "slices": slices,
+            "roles": [
+                {
+                    "name": "prefill",
+                    "spec": {
+                        "replicas": 4,
+                        "leaderWorkerTemplate": {
+                            "workerTemplate": {
+                                "spec": {"containers": [{"name": "modelserver", "image": "vllm/vllm-openai:v1"}]}
+                            }
+                        },
+                    },
+                },
+                {
+                    "name": "decode",
+                    "spec": {
+                        "replicas": 1,
+                        "leaderWorkerTemplate": {
+                            "workerTemplate": {
+                                "spec": {"containers": [{"name": "modelserver", "image": "vllm/vllm-openai:v1"}]}
+                            }
+                        },
+                    },
+                },
+            ],
+        },
+    }
+
+
+def test_single_slice_disaggregated_set_manifest_forces_slices_to_one():
+    manifest = yaml.safe_dump_all([_disaggregated_set(2)], sort_keys=False)
+
+    rendered, report = configuration_manifest.prepare_single_slice_disaggregated_set_manifest(manifest)
+
+    document = yaml.safe_load(rendered)
+    assert document["spec"]["slices"] == 1
+    assert report["disaggregatedSets"] == 1
+    assert report["adjusted"] == 1
+
+
+def test_single_slice_disaggregated_set_manifest_leaves_other_kinds_unchanged():
+    manifest = yaml.safe_dump_all([_vllm_deployment("decode")], sort_keys=False)
+
+    rendered, report = configuration_manifest.prepare_single_slice_disaggregated_set_manifest(manifest)
+
+    assert rendered == manifest
+    assert report["disaggregatedSets"] == 0
+    assert report["adjusted"] == 0
+
+
+def test_single_slice_disaggregated_set_manifest_is_idempotent():
+    manifest = yaml.safe_dump_all([_disaggregated_set(3)], sort_keys=False)
+
+    first, first_report = configuration_manifest.prepare_single_slice_disaggregated_set_manifest(manifest)
+    second, second_report = configuration_manifest.prepare_single_slice_disaggregated_set_manifest(first)
+
+    assert second == first
+    assert first_report["adjusted"] == 1
+    assert second_report["adjusted"] == 0
+
+
+@pytest.mark.asyncio
+async def test_render_enforces_single_slice_disaggregated_set(monkeypatch, tmp_path):
+    manifest = yaml.safe_dump_all([_disaggregated_set(2)], sort_keys=False)
+    source = tmp_path / "manifest.yaml"
+    source.write_text(manifest, encoding="utf-8")
+    delegate = SimpleNamespace(
+        render=AsyncMock(
+            return_value=GuideDeploymentArtifact(
+                guide_id="pd-disaggregation",
+                artifact_hash="source",
+                manifest_ref=str(source),
+                manifest_checksum="sha256:source",
+            )
+        )
+    )
+    monkeypatch.setattr(configuration_manifest, "configured_target_node", lambda: None)
+    adapter = ConfigurationManifestAdapter(delegate, _Runner(), "llmd-", 5, tmp_path / "output")
+
+    artifact = await adapter.render(GuideDefinition("pd-disaggregation", "source", "hash", "stable"), {})
+
+    document = yaml.safe_load(Path(artifact.manifest_ref).read_text())
+    assert document["spec"]["slices"] == 1
+    assert artifact.deployment_contract["disaggregatedSet"]["slices"] == 1

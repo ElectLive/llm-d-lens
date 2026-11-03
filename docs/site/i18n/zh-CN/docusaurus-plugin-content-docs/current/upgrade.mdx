@@ -18,11 +18,11 @@ description: 将现有的 Lens 安装升级到更新版本。
 git pull
 npm install
 python3 -m pip install -e 'apps/backend[dev]'
-node scripts/generate-mcp-tools.mjs
-scripts/lens-local.sh restart
+node hack/generate-mcp-tools.mjs
+hack/lens-local.sh restart
 ```
 
-`scripts/lens-local.sh restart` 会在重启服务之前重新生成并校验复用地图，
+`hack/lens-local.sh restart` 会在重启服务之前重新生成并校验复用地图，
 并重新生成 MCP 工具目录。
 
 ## 回滚

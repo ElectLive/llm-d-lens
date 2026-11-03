@@ -1523,22 +1523,7 @@ class GatewayOpsService:
         for member in self.members.list_by_cluster(cluster_id):
             by_group.setdefault(member.group_id, []).append(member)
         # Heal members whose EPP predates the plaintext gateway-mode requirement.
-        # Only istio/agentgateway reach the EPP over plaintext h2c; envoy-ai-gateway
-        # and gke expect TLS, so forcing plaintext there would break the ext_proc.
-        if provider in ("istio", "agentgateway"):
-            healed: set[tuple[str, str]] = set()
-            for member in self.members.list_by_cluster(cluster_id):
-                group = groups.get(member.group_id)
-                if member.status != "active" or group is None or group.status == "disabled":
-                    continue
-                epp_name = member.epp_ref or (f"{member.pool_name}-epp" if member.pool_name else "")
-                if not epp_name:
-                    continue
-                key = (member.target_namespace, epp_name)
-                if key in healed:
-                    continue
-                healed.add(key)
-                await self._ensure_epp_plaintext(cluster_id, member.target_namespace, epp_name, on_log=on_log)
+        await self._heal_member_epps(cluster_id, provider=provider, on_log=on_log)
         applied_names: set[str] = set()
         rewrite_documents: list[str] = []
         applied_rewrites: set[tuple[str, str]] = set()
@@ -1864,6 +1849,38 @@ class GatewayOpsService:
             await self.install_ipp(cluster_id, actor=None)
         except Exception as error:  # noqa: BLE001 - best effort; the probe retries
             logger.warning("data-plane auto-heal IPP failed for %s: %s", cluster_id, error)
+        await self._heal_member_epps(cluster_id)
+
+    async def _heal_member_epps(
+        self, cluster_id: str, *, provider: str | None = None, on_log: OnLog | None = None
+    ) -> None:
+        """Force plaintext ext_proc on published EPPs that still default to TLS.
+
+        Only istio/agentgateway reach the EPP over plaintext h2c; envoy-ai-gateway
+        and gke expect TLS, so forcing plaintext there would break the ext_proc.
+        An unhealthy probe can be the secure-serving symptom itself, so status does
+        not suppress healing; only explicitly disabled members are skipped.
+        """
+        cluster = get_cluster(cluster_id)
+        if cluster is None:
+            return
+        provider = provider or cluster.gateway_provider or DEFAULT_PROVIDER
+        if provider not in ("istio", "agentgateway"):
+            return
+        groups = {group.id: group for group in self.groups.list()}
+        healed: set[tuple[str, str]] = set()
+        for member in self.members.list_by_cluster(cluster_id):
+            group = groups.get(member.group_id)
+            if member.status == "disabled" or group is None or group.status == "disabled":
+                continue
+            epp_name = member.epp_ref or (f"{member.pool_name}-epp" if member.pool_name else "")
+            if not epp_name:
+                continue
+            key = (member.target_namespace, epp_name)
+            if key in healed:
+                continue
+            healed.add(key)
+            await self._ensure_epp_plaintext(cluster_id, member.target_namespace, epp_name, on_log=on_log)
 
     async def _member_health(self, member) -> tuple[bool, dict]:
         checked = utcnow().isoformat()

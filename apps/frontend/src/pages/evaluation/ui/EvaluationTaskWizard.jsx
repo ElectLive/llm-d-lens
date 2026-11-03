@@ -8,6 +8,7 @@ import OptimizationSelectionSummary from './evaluation/OptimizationSelectionSumm
 import { selectedOptimizationPlan } from '../model/experimentDesign.js';
 import { confirmDelete } from "../../../shared/ui/confirmDelete";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
     AlertTriangle, ArrowLeft, Boxes, Check, ChevronDown, ChevronLeft,
     ChevronRight, Code2, Cpu, Ellipsis, ExternalLink, GitCompareArrows, Layers3, Pencil, Play, Plus, RefreshCw, Server, Settings2, SlidersHorizontal, Trash2,
@@ -44,6 +45,145 @@ function artifactCluster(artifact) {
     return artifact?.deployable_configuration?.provenance?.cluster_ref || {};
 }
 
+function modelServiceDetail(item) {
+    return [item.baseModel && item.baseModel !== item.name ? item.baseModel : "", item.clusterName ? `(${item.clusterName})` : ""]
+        .filter(Boolean)
+        .join(" ");
+}
+
+function ModelServiceSelect({ id, services, value, onChange }) {
+    const [open, setOpen] = useState(false);
+    const [position, setPosition] = useState(null);
+    const triggerRef = useRef(null);
+    const menuRef = useRef(null);
+    const selected = services.find((item) => item.id === value) || null;
+
+    const place = useCallback(() => {
+        const trigger = triggerRef.current;
+        if (!trigger) return;
+        const rect = trigger.getBoundingClientRect();
+        const width = Math.min(rect.width, window.innerWidth - 16);
+        const spaceBelow = window.innerHeight - rect.bottom - 12;
+        const openUp = spaceBelow < 180 && rect.top > spaceBelow;
+        setPosition({
+            left: Math.min(Math.max(8, rect.left), window.innerWidth - width - 8),
+            width,
+            maxHeight: Math.max(120, openUp ? rect.top - 16 : spaceBelow),
+            ...(openUp ? { bottom: window.innerHeight - rect.top + 4 } : { top: rect.bottom + 4 }),
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!open) return undefined;
+        place();
+        const closeOutside = (event) => {
+            if (!triggerRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) setOpen(false);
+        };
+        const closeOnEscape = (event) => {
+            if (event.key !== "Escape") return;
+            setOpen(false);
+            triggerRef.current?.focus();
+        };
+        const closeOnViewportChange = () => setOpen(false);
+        const focusTimer = window.setTimeout(() => {
+            (menuRef.current?.querySelector('[aria-selected="true"]') || menuRef.current?.querySelector('[role="option"]'))?.focus();
+        }, 0);
+        document.addEventListener("mousedown", closeOutside);
+        document.addEventListener("keydown", closeOnEscape);
+        document.addEventListener("scroll", closeOnViewportChange, true);
+        window.addEventListener("resize", closeOnViewportChange);
+        return () => {
+            window.clearTimeout(focusTimer);
+            document.removeEventListener("mousedown", closeOutside);
+            document.removeEventListener("keydown", closeOnEscape);
+            document.removeEventListener("scroll", closeOnViewportChange, true);
+            window.removeEventListener("resize", closeOnViewportChange);
+        };
+    }, [open, place]);
+
+    const choose = (nextValue) => {
+        onChange(nextValue);
+        setOpen(false);
+        triggerRef.current?.focus();
+    };
+
+    const onMenuKeyDown = (event) => {
+        const options = [...(menuRef.current?.querySelectorAll('[role="option"]') || [])];
+        const index = options.indexOf(document.activeElement);
+        if (event.key === "ArrowDown") {
+            event.preventDefault();
+            options[(index + 1) % options.length]?.focus();
+        } else if (event.key === "ArrowUp") {
+            event.preventDefault();
+            options[(index - 1 + options.length) % options.length]?.focus();
+        }
+    };
+
+    return (
+        <div className="relative">
+            <button
+                ref={triggerRef}
+                id={id}
+                type="button"
+                onClick={() => setOpen((current) => !current)}
+                onKeyDown={(event) => {
+                    if (["ArrowDown", "ArrowUp"].includes(event.key)) {
+                        event.preventDefault();
+                        if (!open) {
+                            place();
+                            setOpen(true);
+                        }
+                    }
+                }}
+                aria-haspopup="listbox"
+                aria-expanded={open}
+                title={selected ? `${selected.name}${modelServiceDetail(selected) ? ` ${modelServiceDetail(selected)}` : ""}` : undefined}
+                className={`${inputClass} flex items-center justify-between gap-2 pr-2 text-left`}
+            >
+                <span className={`truncate ${selected ? "text-slate-100" : "text-slate-500"}`}>
+                    {selected?.name || "Select a published model service"}
+                </span>
+                <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-slate-500 transition ${open ? "rotate-180" : ""}`} aria-hidden="true" />
+            </button>
+            {open && position && createPortal(
+                <div
+                    ref={menuRef}
+                    role="listbox"
+                    aria-label="Model service"
+                    onKeyDown={onMenuKeyDown}
+                    style={position}
+                    className="fixed z-[1000] overflow-y-auto rounded-lg border border-slate-700 bg-[#080d17] p-1 shadow-2xl shadow-black/60 ring-1 ring-white/5"
+                >
+                    {services.length === 0 ? (
+                        <p className="px-2.5 py-3 text-[11px] text-slate-500">No published model service</p>
+                    ) : services.map((item) => {
+                        const active = item.id === value;
+                        const detail = modelServiceDetail(item);
+                        return (
+                            <button
+                                key={item.id}
+                                type="button"
+                                role="option"
+                                aria-selected={active}
+                                onClick={() => choose(item.id)}
+                                className={`flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left text-xs transition ${active ? "bg-cyan-500/10 text-cyan-100" : "text-slate-200 hover:bg-slate-800/80"}`}
+                            >
+                                <span className="min-w-0 flex-1">
+                                    <span className="block truncate">{item.name}</span>
+                                    {detail && <span className="mt-0.5 block truncate text-[9px] text-slate-500">{detail}</span>}
+                                </span>
+                                {active && <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-300" aria-hidden="true" />}
+                            </button>
+                        );
+                    })}
+                </div>,
+                document.body,
+            )}
+        </div>
+    );
+}
+
+
 function artifactContent(artifact) {
     return artifact?.deployable_configuration?.content || {};
 }
@@ -68,6 +208,10 @@ function defaultTaskName(guide) {
 
 function timestampSuffix() {
     return new Date().toISOString().replace(/\D/g, "").slice(0, 14);
+}
+
+function shortUuid() {
+    return (globalThis.crypto?.randomUUID?.() ?? `${Math.random().toString(16).slice(2)}${Math.random().toString(16).slice(2)}`).slice(0, 8);
 }
 
 function deploymentServiceName(base, artifact, index, suffix) {
@@ -146,7 +290,7 @@ export default function EvaluationTaskWizard({ onNavigate }) {
     const modelPath = "";
     const [storageVolumes, setStorageVolumes] = useState([]);
     const [sharedRuntime] = useState("vllm");
-    const [deploymentName, setDeploymentName] = useState(returningIntent?.deployment_name || "evaluation-serving");
+    const [deploymentName, setDeploymentName] = useState(() => returningIntent?.deployment_name || `evaluation-serving-${shortUuid()}`);
     const [deploymentDescription, setDeploymentDescription] = useState(returningIntent?.deployment_description || "");
     const [imageMode] = useState("use-upstream-image");
     const [runtimeImage, setRuntimeImage] = useState('');
@@ -175,6 +319,7 @@ export default function EvaluationTaskWizard({ onNavigate }) {
     const [modelServices, setModelServices] = useState([]);
     const [targetId, setTargetId] = useState("");
     const [apiToken, setApiToken] = useState("");
+    const apiTokenValid = /^lens-mk-\S+$/.test(apiToken.trim());
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
@@ -438,11 +583,11 @@ export default function EvaluationTaskWizard({ onNavigate }) {
     ].filter(Boolean);
     const canContinue = deployOnPublish && benchmarkOnly ? false : step === 0
         ? targetMode === "existing"
-            ? Boolean(name.trim() && targetId && apiToken.trim())
+            ? Boolean(name.trim() && targetId && apiTokenValid)
             : Boolean(name.trim() && deploymentName.trim() && sharedModel.trim() && cluster.session_id && !clusterLoading && !clusterHardwareLoading && cluster.id === selectedClusterId && !modelCacheMismatch)
         : step === 1
             ? targetMode === "existing"
-                ? Boolean(targetId && apiToken.trim())
+                ? Boolean(targetId && apiTokenValid)
                 : Boolean(!configurationEditor && !editorBusy && selectedArtifacts.length && selectedClusters.size === 1 && selectedArtifacts.every((item) => matchesEvaluationSetup(item, sharedContext)))
             : step === 2 ? tests.length > 0 && !benchmarkErrors.length : true;
 
@@ -676,6 +821,10 @@ export default function EvaluationTaskWizard({ onNavigate }) {
 
     const create = async () => {
         if (busy) return;
+        if (targetMode === "existing" && !apiTokenValid) {
+            setError("Model access token must start with lens-mk-.");
+            return;
+        }
         if (benchmarkErrors.length) { setError(benchmarkErrors.join(" ")); return; }
         setBusy(true);
         setError("");
@@ -721,11 +870,7 @@ export default function EvaluationTaskWizard({ onNavigate }) {
             const createdWorkflow = await createEvaluation({
                 name: name.trim(),
                 cluster_session_id: cluster.session_id,
-                runtime: {
-                    http_proxy: "http://proxy.ims.intel.com:911",
-                    https_proxy: "http://proxy.ims.intel.com:911",
-                    no_proxy: "intel.com,.intel.com,localhost,127.0.0.1",
-                },
+                runtime: {},
                 compare_configurations: evaluationArtifacts.length > 1,
                 benchmark_plans: namedArtifacts.map((selectedArtifact, index) => ({
                     id: `setup-${index + 1}`,
@@ -764,9 +909,11 @@ export default function EvaluationTaskWizard({ onNavigate }) {
         onNavigate("model-market");
     };
 
-    return <section className="benchmark-task-page compact-evaluation-wizard relative isolate mx-auto w-full max-w-[1500px] shrink-0 space-y-5 overflow-hidden px-4 py-6 text-slate-100 sm:px-6 lg:px-12 lg:py-10">
-        <div aria-hidden="true" className="pointer-events-none absolute -right-32 top-24 -z-10 hidden h-80 w-80 rounded-full bg-cyan-500/[0.07] blur-3xl dark:block" />
-        <div aria-hidden="true" className="pointer-events-none absolute -left-40 top-96 -z-10 hidden h-96 w-96 rounded-full bg-blue-600/[0.05] blur-3xl dark:block" />
+    return <section className="benchmark-task-page compact-evaluation-wizard relative isolate mx-auto w-full max-w-[1500px] shrink-0 space-y-5 px-4 py-6 text-slate-100 sm:px-6 lg:px-12 lg:py-10">
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
+            <div className="absolute -right-32 top-24 hidden h-80 w-80 rounded-full bg-cyan-500/[0.07] blur-3xl dark:block" />
+            <div className="absolute -left-40 top-96 hidden h-96 w-96 rounded-full bg-blue-600/[0.05] blur-3xl dark:block" />
+        </div>
         <PageHeading
             title={deployOnly ? "Configure deployment" : "New Benchmark Task"}
             subtitle={deployOnly ? `Advanced-edit the deployment configuration for ${sharedModel}, then deploy it directly.` : "Design the complete experiment before deployment starts."}
@@ -788,7 +935,7 @@ export default function EvaluationTaskWizard({ onNavigate }) {
                     {benchmarkOnly && <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-5 text-amber-200">Your role can only benchmark an existing deployment. Designing and deploying a new one from configurations needs the deployment-create permission.</p>}
                     <div className="grid items-end gap-3 lg:grid-cols-[1fr_320px]"><div><h2 className="text-lg font-bold">Evaluation Setup</h2><p className="mt-1 text-[11px] text-slate-500">Choose a target and provide only the shared context it needs.</p></div><label className="text-[11px] text-slate-400">Task name<input className={`${inputClass} h-9`} value={name} onChange={(event) => setName(event.target.value)} /></label></div>
                     {!deployOnPublish && <section className="relative overflow-hidden rounded-2xl border border-cyan-500/15 bg-gradient-to-br from-slate-900/80 via-slate-950/70 to-cyan-950/15 p-4 shadow-lg shadow-black/10"><div aria-hidden="true" className="absolute -right-16 -top-20 hidden h-40 w-40 rounded-full bg-cyan-400/[0.06] blur-3xl dark:block" /><div className="relative mb-3 flex items-center justify-between"><div><p className="text-[9px] font-bold uppercase tracking-[0.18em] text-cyan-400">Target</p><h3 className="mt-1 text-sm font-semibold text-slate-100">How should this evaluation run?</h3></div><span className="rounded-full border border-slate-700/80 bg-slate-950/60 px-2.5 py-1 text-[9px] text-slate-500">Step 1</span></div><div className="relative grid gap-3 md:grid-cols-2"><button type="button" onClick={() => setTargetMode("existing")} className={`group rounded-xl border px-4 py-3 text-left transition hover:-translate-y-0.5 ${targetMode === "existing" ? "benchmark-choice-selected border-cyan-400/70 bg-cyan-500/10" : "border-slate-800 bg-slate-950/30 hover:border-slate-700"}`}><span className="text-xs font-semibold">Use existing endpoint</span><span className="mt-0.5 block text-[9px] text-slate-500">Skip deployment design and continue to Benchmark.</span></button>{!benchmarkOnly && <button type="button" onClick={() => setTargetMode("configurations")} className={`group rounded-xl border px-4 py-3 text-left transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 ${targetMode === "configurations" ? "benchmark-choice-selected border-cyan-400/70 bg-cyan-500/10" : "border-slate-800 bg-slate-950/30 hover:border-slate-700"}`}><span className="text-xs font-semibold">Design configurations</span><span className="mt-0.5 block text-[9px] text-slate-500">Set shared deployment context, then choose configurations.</span></button>}</div></section>}
-                    {targetMode === "existing" ? <section className="rounded-xl border border-slate-800 bg-slate-950/35 p-3"><label className="block text-[11px] text-slate-400">Model service<select className={`${inputClass} h-9`} value={targetId} onChange={(event) => setTargetId(event.target.value)}><option value="">Select a published model service</option>{modelServices.map((item) => <option key={item.id} value={item.id}>{item.name}{item.baseModel && item.baseModel !== item.name ? ` · ${item.baseModel}` : ""}{item.clusterName ? ` (${item.clusterName})` : ""}</option>)}</select>{!modelServices.length && <span className="mt-1 block text-[9px] text-amber-300">No model service is published and healthy yet. Publish one from the Model Service page first.</span>}</label><label className="mt-2 block text-[11px] text-slate-400">Model access token<input type="password" autoComplete="off" className={`${inputClass} h-9`} placeholder="lens-mk-…" value={apiToken} onChange={(event) => setApiToken(event.target.value)} /><span className="mt-1 block text-[9px] text-slate-500">Required: the harness authenticates through the cluster&apos;s shared Gateway. Used for this run only; never stored.</span></label></section> : <>
+                    {targetMode === "existing" ? <section className="rounded-xl border border-slate-800 bg-slate-950/35 p-3"><div className="block text-[11px] text-slate-400"><label htmlFor="evaluation-target-model">Model service</label><ModelServiceSelect id="evaluation-target-model" services={modelServices} value={targetId} onChange={setTargetId} />{!modelServices.length && <span className="mt-1 block text-[9px] text-amber-300">No model service is published and healthy yet. Publish one from the Model Service page first.</span>}</div><label className="mt-2 block text-[11px] text-slate-400">Model access token<input type="password" autoComplete="off" className={`${inputClass} h-9`} placeholder="lens-mk-…" value={apiToken} aria-invalid={Boolean(apiToken.trim()) && !apiTokenValid} onChange={(event) => setApiToken(event.target.value)} />{apiToken.trim() && !apiTokenValid && <span className="mt-1 block text-[9px] text-rose-300">Enter the model access token from API keys; it starts with lens-mk-.</span>}<span className="mt-1 block text-[9px] text-slate-500">Required: the harness authenticates through the cluster&apos;s shared Gateway. Used for this run only; never stored.</span></label></section> : <>
                     <div className="grid grid-cols-2 gap-3">
                         <section className="rounded-xl border border-slate-800 bg-gradient-to-br from-slate-950/70 to-cyan-950/10 p-3">
                             <div className="flex items-center justify-between"><SectionLabel>Environment</SectionLabel><div className="flex items-center gap-2"><span className={`text-[9px] font-semibold ${cluster.session_id ? "text-emerald-300" : "text-amber-300"}`}>{clusterLoading ? "Checking…" : cluster.session_id ? "Connected ✓" : "Required"}</span><button type="button" onClick={() => leaveSetupFor("clusters")} title="Manage clusters" aria-label="Manage clusters" className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-700 text-slate-400 transition hover:border-cyan-500/50 hover:bg-cyan-500/10 hover:text-cyan-200"><ExternalLink className="h-3.5 w-3.5" /></button></div></div>

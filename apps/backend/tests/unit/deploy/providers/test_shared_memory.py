@@ -223,10 +223,12 @@ async def test_published_wrapper_checks_without_adding_shared_memory(monkeypatch
         GuideDefinition("optimized-baseline", "source", "hash", "supported"),
         {"officialGuide": {}, "_deployment_namespace": "llmd-test"},
     )
-    assert Path(artifact.manifest_ref).read_text() == manifest
-    assert artifact.manifest_checksum == text_checksum(manifest)
+    rendered = Path(artifact.manifest_ref).read_text()
+    assert "lens-shm" not in rendered
+    assert artifact.manifest_checksum == text_checksum(rendered)
     assert artifact.deployment_contract["sharedMemory"]["warnings"]
     assert artifact.deployment_contract["sharedMemory"]["addedMounts"] == 0
+    assert artifact.deployment_contract["gracefulShutdown"]["containers"]
 
 
 @pytest.mark.asyncio

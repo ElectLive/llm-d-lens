@@ -1191,7 +1191,7 @@ getAcceleratorOperation(accelerator, operationId, { signal })
   (`SERVER_PORT` remains a compatibility alias).
 - Vite frontend (`apps/frontend/vite.config.js` `server.port` / `--port`): **5173**,
   with `/api` proxy target defaulting to `http://localhost:3000`.
-- `scripts/lens-local.sh` propagates the selected backend port to Vite.
+- `hack/lens-local.sh` propagates the selected backend port to Vite.
 
 ---
 

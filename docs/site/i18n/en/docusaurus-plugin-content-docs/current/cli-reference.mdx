@@ -3,17 +3,17 @@ title: CLI Reference
 description: Command-line tools for running, installing and managing Lens.
 ---
 
-## `scripts/lens-local.sh` (local source installation and services)
+## `hack/lens-local.sh` (local source installation and services)
 
 | Command | Purpose |
 | --- | --- |
-| `scripts/lens-local.sh check` | Validate the environment without starting anything. |
-| `scripts/lens-local.sh start` | Prepare dependencies and start Vite and the unified Python backend in the background. Logs are under `$LENS_LOG_DIR/dev/` (default `~/.local/state/lens/logs/dev/`). Validates the reuse map and MCP catalog first. |
-| `scripts/lens-local.sh stop` | Stop all services started by this script. |
-| `scripts/lens-local.sh restart` | Complete target-node checks when enabled, prepare dependencies and validate the reuse map before stopping and restarting services. |
-| `scripts/lens-local.sh status` | Show which services are running and their PIDs. |
-| `scripts/lens-local.sh clean [-y\|--yes]` | Stop services and delete the embedded database plus all local app data under `~/.llm-d-lens`. |
-| `scripts/lens-local.sh install-node` | Install a supported Node.js into `.dev-tools/` (used automatically if the system Node is missing or too old). |
+| `hack/lens-local.sh check` | Validate the environment without starting anything. |
+| `hack/lens-local.sh start` | Prepare dependencies and start Vite and the unified Python backend in the background. Logs are under `$LENS_LOG_DIR/dev/` (default `~/.local/state/lens/logs/dev/`). Validates the reuse map and MCP catalog first. |
+| `hack/lens-local.sh stop` | Stop all services started by this script. |
+| `hack/lens-local.sh restart` | Complete target-node checks when enabled, prepare dependencies and validate the reuse map before stopping and restarting services. |
+| `hack/lens-local.sh status` | Show which services are running and their PIDs. |
+| `hack/lens-local.sh clean [-y\|--yes] [--cache\|--hard\|--all]` | Stop services and delete app data/logs. `--cache` also removes source checkouts and benchmark venvs; `--hard` also removes the dev venv, toolchain, TLS certs, node_modules and build outputs; `--all` removes both. |
+| `hack/lens-local.sh install-node` | Install a supported Node.js into `.dev-tools/` (used automatically if the system Node is missing or too old). |
 
 Ports are configurable via `FRONTEND_PORT` (default `5173`) and `BACKEND_PORT`
 (default `3000`). `SERVER_PORT` remains a fallback for the Python port.
@@ -28,8 +28,8 @@ The kubeconfig flag accepts one file, relative to the directory where you invoke
 the command; inherited `KUBECONFIG` file lists are preserved.
 
 ```bash
-scripts/lens-local.sh restart --target-node node-a --kubeconfig "$HOME/.kube/config"
-TARGET_NODE=node-a KUBECONFIG="$HOME/.kube/config" scripts/lens-local.sh check
+hack/lens-local.sh restart --target-node node-a --kubeconfig "$HOME/.kube/config"
+TARGET_NODE=node-a KUBECONFIG="$HOME/.kube/config" hack/lens-local.sh check
 ```
 
 No dedicated target-node configuration file is loaded, and targets are not
@@ -85,7 +85,7 @@ There is no version override or upgrade mode.
 
 See [Installation](/installation) and [Upgrade](/upgrade) for full usage.
 
-## `node scripts/generate-mcp-tools.mjs`
+## `node hack/generate-mcp-tools.mjs`
 
 Validates the Python MCP catalog against the current REST schema, failing on
 unexpected skipped operations. `--check` performs the same validation; `--json`

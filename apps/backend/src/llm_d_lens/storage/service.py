@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 
 from llm_d_lens.infrastructure.kubernetes import list_resources, scoped_runner
 from llm_d_lens.storage.contracts import (
@@ -138,6 +139,25 @@ async def _kubectl_apply_list(manifests: list[dict], *, cluster_id: str) -> None
     )
     if not result.ok:
         raise StorageVolumeProvisionError((result.stderr or result.stdout or "kubectl apply failed").strip())
+
+
+async def _wait_for_pvc_bound(pvc_name: str, namespace: str, *, cluster_id: str, timeout: float = 60.0) -> None:
+    """Wait until a satellite PVC is Bound before a Deployment references it."""
+    runner = scoped_runner(cluster_id)
+    deadline = time.monotonic() + timeout
+    message = ""
+    while time.monotonic() < deadline:
+        result = await runner.run(
+            ["kubectl", "get", "pvc", pvc_name, "--namespace", namespace, "-o", "jsonpath={.status.phase}"],
+            timeout=15,
+        )
+        message = (result.stderr or result.stdout or "").strip()
+        if result.ok and message == "Bound":
+            return
+        await asyncio.sleep(2)
+    raise StorageVolumeProvisionError(
+        f"PVC {namespace}/{pvc_name} did not become Bound within {timeout:g}s" + (f": {message}" if message else "")
+    )
 
 
 async def create_volume_objects(volume: StorageVolume, *, cluster_id: str) -> StorageVolume:
@@ -386,6 +406,7 @@ async def ensure_mount_in_namespace(volume: StorageVolume, *, namespace: str, cl
         _satellite_pvc_manifest(volume, namespace=namespace),
     ]
     await _kubectl_apply_list(manifests, cluster_id=cluster_id)
+    await _wait_for_pvc_bound(volume.pvc_name, namespace, cluster_id=cluster_id)
     return volume.pvc_name
 
 

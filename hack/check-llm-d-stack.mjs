@@ -5,8 +5,8 @@
 // cannot ship. Run in CI before a release, and locally before changing the
 // profile:
 //
-//   node tools/check-llm-d-stack.mjs           # static + network checks
-//   node tools/check-llm-d-stack.mjs --offline # static checks only
+//   node hack/check-llm-d-stack.mjs           # static + network checks
+//   node hack/check-llm-d-stack.mjs --offline # static checks only
 //
 // A non-zero exit means the profile must be fixed (or the referenced version
 // published) before release.
@@ -32,6 +32,7 @@ const REQUIRED_KEYS = [
   'llm_d_inference_payload_processor',
   'k8s_gateway_api',
   'k8s_gateway_api_inference_extension',
+  'k8s_lws',
 ];
 const REQUIRED_GATEWAY_PROVIDERS = ['istio', 'envoy_gateway', 'envoy_ai_gateway', 'agentgateway'];
 
@@ -79,12 +80,13 @@ export function validateStatic(profile) {
   return problems;
 }
 
-// `export ROUTER_CHART_VERSION=${ROUTER_CHART_VERSION:-v0.10.0}`
+// Accept either a shell default (`export KEY=${KEY:-v1.2.3}`) or a direct
+// assignment (`export KEY=v1.2.3`), which newer llm-d releases use.
 export function parseEnvSh(text) {
   const values = {};
   for (const key of ['ROUTER_CHART_VERSION', 'GATEWAY_API_VERSION', 'GAIE_VERSION']) {
-    const match = text.match(new RegExp(`export ${key}=\\$\\{[^:}]+:-([^}]+)\\}`));
-    if (match) values[key] = match[1].trim();
+    const match = text.match(new RegExp(`export ${key}=(?:\\$\\{[^:}]+:-([^}]+)\\}|["']?([^\\s"']+)["']?)`));
+    if (match) values[key] = (match[1] ?? match[2]).trim();
   }
   return values;
 }
@@ -116,6 +118,20 @@ async function ghcrTagExists(repository, tag) {
   const response = await safeFetch(`https://ghcr.io/v2/${repository}/manifests/${tag}`, {
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      Accept: [
+        'application/vnd.oci.image.manifest.v1+json',
+        'application/vnd.oci.image.index.v1+json',
+        'application/vnd.docker.distribution.manifest.v2+json',
+        'application/vnd.docker.distribution.manifest.list.v2+json',
+      ].join(','),
+    },
+  });
+  return Boolean(response?.ok);
+}
+
+async function registryTagExists(registry, repository, tag) {
+  const response = await safeFetch(`https://${registry}/v2/${repository}/manifests/${tag}`, {
+    headers: {
       Accept: [
         'application/vnd.oci.image.manifest.v1+json',
         'application/vnd.oci.image.index.v1+json',
@@ -162,6 +178,7 @@ export async function runChecks(profile, { offline = false, log = console.log } 
     llm_d_inference_payload_processor: ipp,
     k8s_gateway_api: gatewayApi,
     k8s_gateway_api_inference_extension: gie,
+    k8s_lws: lws,
   } = profile;
 
   for (const [repo, tag] of [
@@ -180,6 +197,8 @@ export async function runChecks(profile, { offline = false, log = console.log } 
   ]) {
     record(await ghcrTagExists(repository, tag), `ghcr.io/${repository}:${tag} exists`);
   }
+
+  record(await registryTagExists('registry.k8s.io', 'lws/charts/lws', lws), `registry.k8s.io/lws/charts/lws:${lws} exists`);
 
   for (const image of loadModelServerImages()) {
     const { repository, tag } = splitImageReference(image);

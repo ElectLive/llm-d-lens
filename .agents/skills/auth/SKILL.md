@@ -162,5 +162,5 @@ Pause and get explicit approval (and record it as a new `D<n>` in the design doc
 - Run auth and affected owning-domain tests directly. Run affected JavaScript
   tests and type checks when their contracts change. Shared permission or session
   changes require broader caller coverage; catalog scans do not replace tests.
-- Restart the backend (`scripts/lens-local.sh restart`) before manual verification:
+- Restart the backend (`hack/lens-local.sh restart`) before manual verification:
   middleware, route registry and Node env changes are not hot-reloaded.

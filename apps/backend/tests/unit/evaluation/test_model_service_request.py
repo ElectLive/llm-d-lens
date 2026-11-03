@@ -28,3 +28,8 @@ def test_model_service_target_requires_an_api_key():
 def test_deployment_execution_request_does_not_require_an_api_key():
     request = EvaluateRunRequest(deployment_execution_id="execution")
     assert request.api_key is None
+
+
+def test_model_service_target_rejects_a_non_model_access_token():
+    with pytest.raises(ValueError, match="lens-mk-"):
+        EvaluateRunRequest(model_service_group_id="msg-1", api_key="Observability stack is degraded")

@@ -46,6 +46,8 @@ class FakeRunner:
 
     async def run(self, argv, **kwargs):
         self.calls.append(list(argv))
+        if self.ok and list(argv[:3]) == ["kubectl", "get", "pvc"]:
+            return FakeResult(0, stdout="Bound")
         return FakeResult(0 if self.ok else 1, stderr="" if self.ok else "boom")
 
 
@@ -154,8 +156,9 @@ async def test_ensure_mount_in_namespace_creates_satellite_pv_and_pvc_for_nfs(mo
         volume, namespace="llmd-optimized-baseline-1-1-xyz", cluster_id="cluster-1"
     )
     assert result == "prism-storage-abc"
-    assert len(runner.calls) == 1
+    assert len(runner.calls) == 2
     assert runner.calls[0][:2] == ["kubectl", "apply"]
+    assert runner.calls[1][:3] == ["kubectl", "get", "pvc"]
 
 
 @pytest.mark.asyncio

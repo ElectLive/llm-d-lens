@@ -14,7 +14,7 @@ import yaml
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from llm_d_lens.configuration.manifest_facts import _invocation_tokens
+from llm_d_lens.configuration.manifest_facts import _invocation_tokens, workload_roles
 from llm_d_lens.core.exceptions import DomainError
 from llm_d_lens.hardware.registry import all_profiles
 from llm_d_lens.hardware.resolver import resolve_by_accelerator_key, resolve_by_device_class, resolve_by_resource
@@ -211,10 +211,9 @@ def validate_manifest_capacity(documents: list[dict], budget: float, basis: str,
         resources = container.get("resources") or {}
         return accelerator_total({**(resources.get("limits") or {}), **(resources.get("requests") or {})})
 
-    for document in documents:
-        if document.get("kind") not in {"Deployment", "StatefulSet"}:
-            continue
-        pod = document.get("spec", {}).get("template", {}).get("spec", {})
+    for workload in workload_roles(documents):
+        document = workload["document"]
+        pod = workload["pod"]
         containers = pod.get("containers", [])
         regular = sum(container_demand(container) for container in containers)
         persistent, peak = 0, 0
@@ -256,8 +255,10 @@ def validate_manifest_capacity(documents: list[dict], budget: float, basis: str,
             for container in containers
             if container.get("name") == "modelserver"
         )
-        demand += float(document.get("spec", {}).get("replicas", 1)) * max(
-            max(regular + persistent, peak) + claim_demand, model_tp
+        demand += (
+            float(workload.get("replicas", 1))
+            * float(workload.get("slices", 1))
+            * max(max(regular + persistent, peak) + claim_demand, model_tp)
         )
     errors[:] = [error for error in errors if not error.startswith("Insufficient resources:")]
     if not math.isfinite(demand) or demand > budget or (budget == 0 and demand == 0):
@@ -392,6 +393,7 @@ def plan_documents(
         logger.warning("Invalid Guide settings", exc_info=True)
         errors.append("Invalid Guide settings; check cacheCpuGiB, rdmaNicCount and routerValues.")
     profile = profile_for_key(requested.get("accelerator", ""))
+    workloads = workload_roles(documents)
     cluster_accel = (cluster or {}).get("accelerator") or {}
     machine_accel = machine.get("accelerator") or {}
     cluster_count = cluster_accel.get("count") or accelerator_total(
@@ -524,35 +526,35 @@ def plan_documents(
                     "restrict allocation to configured devices present in the selected cluster",
                 )
 
-    for document_index, document in enumerate(documents):
-        if document.get("kind") != "Deployment" or not document.get("spec"):
-            continue
-        pointer = f"/documents/{document_index}"
-        spec = document["spec"]
-        role = resource_role(document)
-        if spec.get("progressDeadlineSeconds", 0) < 1800:
+    for workload in workloads:
+        spec = workload["spec"]
+        role = workload["role"]
+        slices = int(workload["slices"] or 1)
+        spec_pointer = workload["spec_pointer"]
+        pod_pointer = workload["pod_pointer"]
+        if workload["kind"] == "Deployment" and spec.get("progressDeadlineSeconds", 0) < 1800:
             replace(
                 spec,
                 "progressDeadlineSeconds",
                 1800,
-                pointer + "/spec/progressDeadlineSeconds",
+                spec_pointer + "/progressDeadlineSeconds",
                 "allow accelerator allocation and model initialization to complete",
             )
         guide_count = spec.get("replicas") or 1
-        guide_replicas += guide_count
-        guide_by_role[role] = guide_by_role.get(role, 0) + guide_count
-        pod = spec.get("template", {}).get("spec", {})
+        guide_replicas += guide_count * slices
+        guide_by_role[role] = guide_by_role.get(role, 0) + guide_count * slices
+        pod = workload["pod"]
         if profile and profile.deployment.node_selector:
             replace(
                 pod,
                 "nodeSelector",
                 {**profile.deployment.node_selector, **pod.get("nodeSelector", {})},
-                pointer + "/spec/template/spec/nodeSelector",
+                pod_pointer + "/nodeSelector",
                 "apply hardware scheduling defaults",
             )
         per_replica = cpu = memory = 0
         for container_index, container in enumerate(pod.get("containers", [])):
-            container_pointer = pointer + f"/spec/template/spec/containers/{container_index}"
+            container_pointer = pod_pointer + f"/containers/{container_index}"
             if container.get("name") == "modelserver":
                 image = requested.get("runtimeImage") or (profile.deployment.runtime_image if profile else None)
                 if image:
@@ -638,7 +640,7 @@ def plan_documents(
             memory += quantity_number(limits.get("memory"))
         for index, container in enumerate(pod.get("initContainers", [])):
             if container.get("name") == "routing-proxy" and dual:
-                location = pointer + f"/spec/template/spec/initContainers/{index}"
+                location = pod_pointer + f"/initContainers/{index}"
                 replace(
                     container,
                     "image",
@@ -654,8 +656,6 @@ def plan_documents(
                         location + "/imagePullPolicy",
                         "avoid mutable nightly proxy pulls",
                     )
-                if isinstance(container.get("args"), list):
-                    apply_runtime_overrides(container, [{"kind": "argument", "name": "vllm-port", "value": "8200"}])
         per_replica = max(per_replica, claims.get(role) or claims.get("serving", 0))
         accelerators_per_replica, cpu_per_replica, memory_per_replica = (
             max(accelerators_per_replica, per_replica),
@@ -687,11 +687,11 @@ def plan_documents(
                 spec,
                 "replicas",
                 planned_count,
-                pointer + "/spec/replicas",
+                workload["replicas_pointer"],
                 "apply requested topology" if replicas > 0 else "fit detected machine or cluster capacity",
             )
-        planned_replicas += planned_count
-        planned_by_role[role] = planned_by_role.get(role, 0) + planned_count
+        planned_replicas += planned_count * slices
+        planned_by_role[role] = planned_by_role.get(role, 0) + planned_count * slices
 
     def walk(value, pointer=""):
         if isinstance(value, list):
@@ -715,13 +715,10 @@ def plan_documents(
     walk(documents, "/documents")
     try:
         overrides, applied = runtime_overrides(requested), set()
-        for document_index, document in enumerate(documents):
-            if document.get("kind") != "Deployment":
-                continue
-            role = resource_role(document)
-            for container_index, container in enumerate(
-                document.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
-            ):
+        for workload in workloads:
+            role = workload["role"]
+            pod_pointer = workload["pod_pointer"]
+            for container_index, container in enumerate(workload["pod"].get("containers", [])):
                 if container.get("name") != "modelserver":
                     continue
                 selected = [item for item in overrides if item["target"] in {"both", role if dual else "decode"}]
@@ -756,9 +753,7 @@ def plan_documents(
                     if before.get(key) != container.get(key):
                         patch = {
                             "op": "add" if key not in before else "replace",
-                            "path": (
-                                f"/documents/{document_index}/spec/template/spec/containers/{container_index}/{key}"
-                            ),
+                            "path": f"{pod_pointer}/containers/{container_index}/{key}",
                             "value": deepcopy(container[key]),
                             "reason": "apply explicit runtime configuration",
                         }
@@ -775,18 +770,13 @@ def plan_documents(
     if "rdmaNicCount" in settings and not nic_requests:
         errors.append("The selected Guide has no supported RDMA NIC request.")
     if not any(
-        document.get("kind") == "Deployment"
-        and any(
-            container.get("name") == "modelserver"
-            for container in document.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
-        )
-        for document in documents
+        container.get("name") == "modelserver"
+        for workload in workloads
+        for container in workload["pod"].get("containers", [])
     ):
-        errors.append("The selected Guide has no identifiable modelserver Deployment.")
+        errors.append("The selected Guide has no identifiable modelserver workload.")
     if not guide_replicas:
-        warnings.append(
-            "No Deployment replica field was found; replica capacity was inherited from the guide unchanged."
-        )
+        warnings.append("No workload replica field was found; replica capacity was inherited from the guide unchanged.")
     for role, count in claims.items():
         if tp_by_role.get(role) and count and tp_by_role[role] != count:
             warnings.append(
@@ -844,30 +834,21 @@ def plan_documents(
         warnings.append(model_estimate["assumption"])
     runtime_class = runtime_class_for_accelerator(cluster, requested.get("accelerator", ""))
     if runtime_class:
-        for index, document in enumerate(documents):
-            spec = document.get("spec") or {}
-            pod = (
-                spec.get("leaderWorkerTemplate", {}).get("workerTemplate", {}).get("spec")
-                if document.get("kind") == "LeaderWorkerSet"
-                else (
-                    spec.get("template", {}).get("spec")
-                    if document.get("kind") in {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job"}
-                    else None
-                )
+        for workload in workloads:
+            pod = workload["pod"]
+            if pod.get("runtimeClassName"):
+                continue
+            pod["runtimeClassName"] = runtime_class
+            patches.append(
+                {
+                    "op": "add",
+                    "path": workload["pod_pointer"] + "/runtimeClassName",
+                    "value": runtime_class,
+                    "reason": (
+                        f"run under the {runtime_class} container runtime so the container can access the accelerator"
+                    ),
+                }
             )
-            if pod is not None and not pod.get("runtimeClassName"):
-                pod["runtimeClassName"] = runtime_class
-                patches.append(
-                    {
-                        "op": "add",
-                        "path": f"/documents/{index}/spec/template/spec/runtimeClassName",
-                        "value": runtime_class,
-                        "reason": (
-                            f"run under the {runtime_class} container runtime "
-                            "so the container can access the accelerator"
-                        ),
-                    }
-                )
     demand = validate_manifest_capacity(documents, available, basis, errors)
     if cluster and not cluster.get("preflightPassed"):
         errors.append("Kubernetes preflight did not pass.")
@@ -917,13 +898,10 @@ def plan_documents(
 
 
 def deployment_contract(documents: list[dict], guide: str) -> dict:
-    deployments = [
-        document
-        for document in documents
-        if document.get("kind") == "Deployment" and document.get("metadata", {}).get("name")
-    ]
-    if not deployments:
-        raise GuideError("Generated Guide YAML contains no Deployment", 422)
+    workloads = workload_roles(documents)
+    readiness = list(dict.fromkeys(workload["name"] for workload in workloads if workload["name"]))
+    if not readiness:
+        raise GuideError("Generated Guide YAML contains no model-server workload", 422)
     service = next(
         (
             document
@@ -936,36 +914,39 @@ def deployment_contract(documents: list[dict], guide: str) -> dict:
     )
     if service is None:
         serving = next(
-            (
-                document
-                for document in deployments
-                if document.get("metadata", {}).get("labels", {}).get("llm-d.ai/role") in {"decode", "serving"}
-            ),
-            deployments[0],
+            (workload for workload in workloads if workload["role"] in {"decode", "serving"}),
+            workloads[0],
         )
         container_port = next(
             (
                 port
-                for container in serving.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+                for container in serving["pod"].get("containers", [])
                 for port in container.get("ports", [])
                 if float(port.get("containerPort") or 0) > 0
             ),
             {},
         )
         port = container_port.get("containerPort") or 8000
+        if serving["kind"] == "Deployment":
+            selector = (serving["spec"].get("selector") or {}).get("matchLabels") or serving["pod_labels"]
+        else:
+            selector = {
+                key: serving["pod_labels"][key]
+                for key in ("llm-d.ai/guide", "llm-d.ai/role")
+                if serving["pod_labels"].get(key)
+            } or serving["pod_labels"]
         service = {
             "apiVersion": "v1",
             "kind": "Service",
             "metadata": {"name": f"{guide}-modelserver", "labels": {"llm-d.ai/guide": guide}},
             "spec": {
-                "selector": serving.get("spec", {}).get("selector", {}).get("matchLabels")
-                or serving.get("spec", {}).get("template", {}).get("metadata", {}).get("labels", {}),
+                "selector": selector,
                 "ports": [{"name": "http", "port": port, "targetPort": container_port.get("name") or port}],
             },
         }
         documents.append(service)
     return {
-        "readinessDeployments": [document["metadata"]["name"] for document in deployments],
+        "readinessDeployments": readiness,
         "endpoint": {
             "protocol": "http",
             "serviceName": service["metadata"]["name"],
@@ -1113,9 +1094,8 @@ async def plan(request: Request):
             settings = normalize_guide_settings(guide, body.get("guideSettings", {}))
             servers = [
                 container
-                for document in planned["documents"]
-                if document.get("kind") == "Deployment"
-                for container in document.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+                for workload in workload_roles(planned["documents"])
+                for container in workload["pod"].get("containers", [])
                 if container.get("name") == "modelserver"
             ]
             block_sizes = [

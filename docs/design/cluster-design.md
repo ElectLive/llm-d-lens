@@ -56,20 +56,19 @@ and [user guide](../site/i18n/en/docusaurus-plugin-content-docs/current/user-gui
      creation time. Also pin the model-service data-plane version set (Gateway
      provider, GIE, Router, IPP) and install the shared components into the target
      cluster.
-  4. **Model Cache (optional)**: the user provides `HF_TOKEN`, Lens creates a
-     Secret in the target cluster; choose or create a Storage volume; choose which
-     models to prewarm (HuggingFace repo id + revision); automatically trigger the
-     download after creation.
+  4. **Model Cache** (storage required, prewarm optional): the user provides
+     `HF_TOKEN`, Lens creates a Secret in the target cluster and always creates a
+     Storage volume; optionally choose which models to prewarm (HuggingFace repo
+     id + revision) and automatically trigger the download after creation.
   5. **Confirmation**: read-only summary, then submit.
 - Afterward, modules such as Evaluate and Monitoring should, for the same cluster,
   use the llm-d / llm-d-benchmark versions pinned on that cluster **by default**,
   without requiring the user to override them via environment variables or request
   bodies each time.
-- Steps 2-4 are all optional / skippable: skipping is equivalent to the current
-  behavior (no proxy override, use global default versions, no model prewarming),
-  ensuring the existing minimal flow of "only pass kubeconfig" and existing
-  automation scripts are not broken (the existing required fields of
-  `POST /api/cluster/clusters` remain unchanged; all added fields are optional).
+- In the wizard, steps 2-3 are optional / skippable: skipping is equivalent to the
+  current behavior (no proxy override, use global default versions), ensuring the
+  existing minimal flow is not broken. Step 4 always creates a Storage volume;
+  only the model prewarming remains optional.
 
 #### Non-goals
 
@@ -144,9 +143,11 @@ skipped directly), the normal five-step wizard is shown:
 - The local form state of each step is merged into a single `wizardForm` object
   (instead of the current three fields `{ name, description, file }`, expanded to
   the full payload in §3).
-- Steps 2-4 each have a "skip this step" switch at the top, off by default. When
-  off, that step's form fields are not rendered, not validated, and the submitted
-  payload does not include the corresponding segment.
+- Steps 2-3 each have a "skip this step" switch at the top, off by default. When a
+  step is skipped, its form fields are not rendered, not validated, and the
+  submitted payload does not include the corresponding segment. Step 4 always
+  creates a Storage volume; only its model prewarm switch is optional and off by
+  default.
 - After clicking "Create cluster", the wizard **does not close immediately**:
   instead, it enters a "creating" progress view (see the state machine in §5) and
   polls the cluster's provisioning status until all selected steps are completed
@@ -182,7 +183,7 @@ Therefore the create-cluster backend flow changes as follows:
    - **Synchronously** write fields submitted from Steps 2/3 (proxy config,
      llm-d/llm-d-benchmark versions) into the expanded Cluster metadata (these are
      only persisted configuration and do not involve network I/O).
-   - If Step 4 enabled Model Cache, **synchronously** validate input
+   - If a model prewarm was requested, **synchronously** validate input
      (repo id format, non-empty token, etc.), but do not block waiting for the
      Storage volume to become ready or for the download to finish.
    - Return `202` (instead of today's `201`—semantically more accurate to express
@@ -197,10 +198,10 @@ Therefore the create-cluster backend flow changes as follows:
    (`asyncio.create_task`, using the same fire-and-forget task pattern as the
    existing `deployment_run_manager` and `model_cache`) executes the selected
    substeps in order:
-   a. If Model Cache is enabled: call `storage.service` to create a `local-disk`
-      Storage volume (see §4.4 for the discussion of automatic configuration), and
-      wait for it to become `READY`.
-   b. If Model Cache is enabled: call the new
+   a. Always: call `storage.service` to create a `local-disk` Storage volume (see
+      §4.4 for the discussion of automatic configuration), and wait for it to
+      become `READY`.
+   b. If a model prewarm was requested: call the new
       `model_cache.jobs.create_pasted_token_secret()` to create a Secret in the
       target cluster using the user-provided `HF_TOKEN` (see §4.4), and then call
       existing `ModelCacheService.request_download()` + `provision()`.
@@ -708,9 +709,10 @@ llm-d-benchmark version/commit [87d03da…] (default = current _BENCHMARK_REVISI
 ── Model-service data plane (pinned version set per cluster; optional) ──────────
 Gateway provider             [istio ▾]  (istio | gke | agentgateway | envoy-ai-gateway)
 Gateway / provider version   [1.29.4]
-GIE / Gateway API CRD        [v1.5.0]
-llm-d Router version         [v0.11.0]  (EPP / Proxy chart or image)
-IPP version                  [v0.1.0-rc.4]  (payload-processor chart or image)
+GIE / Gateway API CRD        [v1.6.2]
+LeaderWorkerSet              [v1.0.0]  (DisaggregatedSet API for P/D)
+llm-d Router version         [v1.0.0]  (EPP / Proxy chart or image)
+IPP version                  [v1.0.0]  (payload-processor chart or image)
 ```
 
 **Backend changes (reuse + generalize the two existing repository caches rather
@@ -785,7 +787,7 @@ clone-source approach does not apply:
   are already installed at the same version are not reinstalled; version changes
   upgrade as needed.
 
-#### 4.4 Step 4: Model Cache (optional)
+#### 4.4 Step 4: Model Cache (storage required, prewarm optional)
 
 Form fields (**corrected after requirement clarification: there is no
 "automatic/default" behavior at all; the Storage portion is a fully manual form,
@@ -806,12 +808,10 @@ Token value  [__________________]  (password input)
 repo id      [meta-llama/Llama-3.1-8B-Instruct]
 revision     [main]
 
-── Storage location ────────────────────────────────────────
-( ) Use an existing Storage volume: [dropdown showing only READY volumes under this
-                                     cluster_id with kind=local-disk/nfs]
-( ) Create a new Storage volume — the following is exactly the same as the Storage
-    page's "New volume" form, with no default values; the user must fill out
-    everything manually:
+── Storage location (required) ────────────────────────────
+A new Storage volume is always created — the following is exactly the same as
+the Storage page's "New volume" form, with no default values; the user must fill
+out everything manually:
     kind          ( ) local-disk  ( ) nfs  ( ) ... (same as StorageVolumeCreateRequest)
     capacity      [__________]  (required, no default)
     hostPath      [__________]  (required when kind=local-disk, no default)

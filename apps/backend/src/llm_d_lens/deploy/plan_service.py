@@ -9,6 +9,7 @@ from llm_d_lens.configuration.managed_environment import (
     admin_managed_environment_names,
     is_admin_managed_environment_variable,
 )
+from llm_d_lens.configuration.manifest_facts import workload_roles
 from llm_d_lens.deploy.configuration_adapter import DeploymentConfigurationPlanner
 from llm_d_lens.deploy.contracts import (
     DeploymentCase,
@@ -104,11 +105,8 @@ class DeploymentPlanService:
                 configuration.content, configuration.provider_ref
             )
             documents = list(yaml.safe_load_all(manifest))
-            for document in documents:
-                if not isinstance(document, dict) or document.get("kind") != "Deployment":
-                    continue
-                containers = document.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
-                for container in containers:
+            for workload in workload_roles([document for document in documents if isinstance(document, dict)]):
+                for container in workload["pod"].get("containers", []):
                     if container.get("name") != "modelserver":
                         continue
                     container["env"] = [

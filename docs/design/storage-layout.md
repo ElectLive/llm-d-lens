@@ -148,7 +148,7 @@ Root directories prefer `LENS_*`; when unset, XDG rules and the defaults above a
 
 | Resource | Path | Usage |
 | --- | --- | --- |
-| llm-d source used for development startup | `CACHE/llm-d/` | Default location for `scripts/lens-local.sh`; `LLM_D_ROOT` can specify an existing directory, and if absent a prompt is shown to prepare the source |
+| llm-d source used for development startup | `CACHE/llm-d/` | Default location for `hack/lens-local.sh`; `LLM_D_ROOT` can specify an existing directory, and if absent a prompt is shown to prepare the source |
 | Repository download feature | `CACHE/repos/<repo>/<url-hash>/<commit>/` | Cache llm-d and llm-d-benchmark by source URL and resolved commit |
 | Guide planning cache | `CACHE/guide-planning/` | Save manifests and rendered results used for planning |
 | Remote deployment source | Remote host `CACHE/deploy-repos/<org>/<repo>/` | A GitHub URL triggers cloning; if an existing path is specified, use that path |
@@ -163,7 +163,7 @@ Source downloads preserve the existing repository, version, and deployment-scena
 
 | Function | Existing capability | Code entry |
 | --- | --- | --- |
-| Unified root directories | Python, Node, and startup scripts use `LENS_*` / XDG rules; old module directory variables no longer override new paths | Python `infrastructure/storage/paths.py`, Node `infrastructure/storagePaths.ts`, `scripts/storage-env.sh` |
+| Unified root directories | Python, Node, and startup scripts use `LENS_*` / XDG rules; old module directory variables no longer override new paths | Python `infrastructure/storage/paths.py`, Node `infrastructure/storagePaths.ts`, `hack/storage-env.sh` |
 | Business-file persistence | Configuration, deployment, evaluation, simulation, and monitoring are saved by domain and task ID | Modules in each domain |
 | File registration | Record source version, configuration ID, SHA-256, truncation status, and retention category | `infrastructure/artifacts/store.py` |
 | File location | Form a `lens-artifact://` identifier from owner object ID and relative path | `artifact_uri`, `resolve_artifact` |
@@ -178,10 +178,10 @@ Guide planning and cluster sessions use the same Python storage helpers.
 | Capability | File path | Integration scope |
 | --- | --- | --- |
 | Python path selection | [storage/paths.py](../../apps/backend/src/llm_d_lens/infrastructure/storage/paths.py) | Persistent directories, cache, and temporary directories for Python business modules |
-| Startup environment | [scripts/storage-env.sh](../../scripts/storage-env.sh) | Root-directory configuration for development and installation startup scripts |
+| Startup environment | [hack/storage-env.sh](../../hack/storage-env.sh) | Root-directory configuration for development and installation startup scripts |
 | File manifests and identifiers | [artifacts/store.py](../../apps/backend/src/llm_d_lens/infrastructure/artifacts/store.py) | Configuration, deployment, evaluation, simulation, dataset, and monitoring results |
 | Migration and retention checks | [storage/admin.py](../../apps/backend/src/llm_d_lens/infrastructure/storage/admin.py) | Offline copying, manifest reconstruction, cleanup-candidate statistics |
-| Container storage | [Dockerfile](../../Dockerfile) | Service root directories and volume configuration |
+| Container storage | [Dockerfile](../../deploy/Dockerfile) | Service root directories and volume configuration |
 
 ### Content Kept Under Separate Management
 

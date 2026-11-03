@@ -2,4 +2,4 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 git diff --cached --check
-node tools/check-english.mjs --staged
+node hack/check-english.mjs --staged

@@ -1,7 +1,9 @@
 from copy import deepcopy
 
 import pytest
+import yaml
 
+from llm_d_lens.deploy import guide_bundle
 from llm_d_lens.deploy import guide_planning as guide
 from llm_d_lens.deploy import guide_runtime as runtime
 from llm_d_lens.deploy import guide_sources as sources
@@ -26,6 +28,104 @@ def deployment(name="model", replicas=1, count=1):
             },
         },
     }
+
+
+def disaggregated_set():
+    return {
+        "apiVersion": "disaggregatedset.x-k8s.io/v1",
+        "kind": "DisaggregatedSet",
+        "metadata": {"name": "pd-disagg", "labels": {"llm-d.ai/guide": "pd-disaggregation"}},
+        "spec": {
+            "slices": 1,
+            "roles": [
+                {
+                    "name": role,
+                    "spec": {
+                        "replicas": 1,
+                        "leaderWorkerTemplate": {
+                            "size": 1,
+                            "workerTemplate": {
+                                "metadata": {"labels": {"llm-d.ai/role": role}},
+                                "spec": {
+                                    "containers": [
+                                        {
+                                            "name": "modelserver",
+                                            "args": ["example/model", "--tensor-parallel-size=1"],
+                                            "ports": [{"name": "modelserver", "containerPort": 8000}],
+                                        }
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                }
+                for role in ("prefill", "decode")
+            ],
+        },
+    }
+
+
+def test_pd_plan_keeps_v1_sidecar_arguments_without_legacy_vllm_port():
+    document = disaggregated_set()
+    decode = document["spec"]["roles"][1]["spec"]["leaderWorkerTemplate"]["workerTemplate"]["spec"]
+    decode["initContainers"] = [
+        {
+            "name": "routing-proxy",
+            "image": "ghcr.io/llm-d/llm-d-router-disagg-sidecar:v1.0.0",
+            "args": ["--port=8000", "--kv-connector=nixlv2", "--secure-serving=false"],
+        }
+    ]
+    plan = guide.plan_documents(
+        [document],
+        "Qwen/Qwen3-0.6B",
+        {"cpu": {"logicalCores": 32}, "memoryGiB": 128, "accelerator": {"count": 8}},
+        None,
+        {
+            "guide": "pd-disaggregation",
+            "prefillReplicas": 1,
+            "decodeReplicas": 1,
+            "prefillTensorParallelSize": 1,
+            "decodeTensorParallelSize": 1,
+        },
+    )
+
+    planned = plan["documents"][0]["spec"]["roles"][1]["spec"]["leaderWorkerTemplate"]["workerTemplate"]["spec"]
+    assert planned["initContainers"][0]["args"] == [
+        "--port=8000",
+        "--kv-connector=nixlv2",
+        "--secure-serving=false",
+    ]
+
+
+def test_disaggregated_set_is_planned_as_native_roles():
+    machine = {"cpu": {"logicalCores": 32}, "memoryGiB": 128, "accelerator": {"count": 8}}
+    plan = guide.plan_documents(
+        [disaggregated_set()],
+        "Qwen/Qwen3-0.6B",
+        machine,
+        None,
+        {
+            "guide": "pd-disaggregation",
+            "prefillReplicas": 2,
+            "decodeReplicas": 3,
+            "prefillTensorParallelSize": 1,
+            "decodeTensorParallelSize": 2,
+        },
+    )
+
+    assert not plan["validation"]["errors"]
+    document = plan["documents"][0]
+    assert [role["spec"]["replicas"] for role in document["spec"]["roles"]] == [2, 3]
+    assert plan["summary"]["guideReplicas"] == 2
+    assert plan["summary"]["plannedReplicas"] == 5
+
+    contract = guide.deployment_contract(plan["documents"], "pd-disaggregation")
+    assert contract["readinessDeployments"] == ["pd-disagg"]
+    assert contract["endpoint"]["serviceName"] == "pd-disaggregation-modelserver"
+    assert any(
+        item.get("kind") == "Service" and item["metadata"]["name"] == "pd-disaggregation-modelserver"
+        for item in plan["documents"]
+    )
 
 
 def test_variant_normalization_and_parent_rejection():
@@ -463,3 +563,49 @@ def test_plan_validation_does_not_expose_internal_exceptions(monkeypatch, caplog
     assert result["validation"]["status"] == "invalid"
     assert detail not in str(result)
     assert detail in caplog.text
+
+
+def test_precise_v1_endpoint_discovery_does_not_need_a_render_pool():
+    values = {
+        "router": {
+            "epp": {
+                "pluginsConfigFile": "plugins.yaml",
+                "pluginsCustomConfig": {
+                    "plugins.yaml": yaml.safe_dump(
+                        {
+                            "plugins": [
+                                {
+                                    "type": "token-producer",
+                                    "parameters": {"vllm": {"endpointDiscovery": {"attemptTimeout": "2s"}}},
+                                }
+                            ]
+                        }
+                    )
+                },
+            }
+        }
+    }
+    assert guide_bundle._needs_render_service(values) is False
+
+
+def test_precise_render_url_still_needs_a_render_pool():
+    values = {
+        "router": {
+            "epp": {
+                "pluginsConfigFile": "plugins.yaml",
+                "pluginsCustomConfig": {
+                    "plugins.yaml": yaml.safe_dump(
+                        {
+                            "plugins": [
+                                {
+                                    "type": "token-producer",
+                                    "parameters": {"vllm": {"url": "http://render:8000"}},
+                                }
+                            ]
+                        }
+                    )
+                },
+            }
+        }
+    }
+    assert guide_bundle._needs_render_service(values) is True

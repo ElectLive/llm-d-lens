@@ -816,6 +816,7 @@ The table below is the core of “refined permissions”. `R` = read-like, `W` =
 | `deployment:run:read` | View runs / executions / cases / pods / logs | `GET /runs**`, `GET /executions**`, `GET /cluster/{id}`, `GET /runs/{id}/cases/{cid}[/logs]`, `GET /executions/{id}/pods[/{pod}/logs]` |
 | `deployment:run:create` | Create run / standard-vllm | `POST /runs`, `POST /standard-vllm-runs` |
 | `deployment:execution:update` | Edit display metadata | `PATCH /executions/{id}` |
+| `deployment:execution:scale` | Scale live model-server replicas | `POST /executions/{id}/scale` |
 | `deployment:execution:delete` | Delete execution/run (including namespace) | `DELETE /executions/{id}`, `DELETE /runs/{id}` |
 | `deployment:execution:connect` | Create local endpoint | `POST /executions/{id}/endpoint` |
 | `deployment:run:cancel` | Cancel run | `POST /runs/{id}/cancel` |
@@ -1126,6 +1127,7 @@ and superseded by D28, including their creator/role-picker behavior.
 | `deployment:run:create` | ✅ | ✅ | ❌ (**correction D26**: end-users may not create deployments) |
 | `deployment:run:share` | ✅ | ✅ | ✅ (**creator only**, owner group excluded) |
 | `deployment:execution:update` / `:connect` / `deployment:run:cancel` | ✅ | ✅ | ✅ (creator or owner-group operate) |
+| `deployment:execution:scale` | ✅ | ✅ | ❌ |
 | `deployment:execution:delete` | ✅ | ✅ | ✅ (**creator only**, owner group excluded) |
 | `deployment:case:execute` / `deployment:session:rebind` | ✅ | ✅ | ✅ (creator or owner group) |
 | `deployment:agentic:create` / `:select` / `:refine` / `:approve` | ✅ | ✅ | ❌ (**correction D26**: approve starts a deployment) |
@@ -1592,7 +1594,7 @@ Pagination/filtering reuse the existing DTO + DAO conventions; import/export is 
 - See §9.2 for the adjusted mount order in `server.js`.
 - `.deploy_config.example` and the installer-written environment: inject `LENS_SECRET_KEY`,
   `LENS_INTERNAL_AUTH_SECRET` through secrets; in production set `PRISM_COOKIE_SECURE=true`.
-- `scripts/lens-local.sh`: for development paths other than the default `PRISM_AUTH_MODE=disabled`,
+- `hack/lens-local.sh`: for development paths other than the default `PRISM_AUTH_MODE=disabled`,
   provide a bootstrap admin; keep `SIMULATION_ALLOW_UNAUTHENTICATED` compatibility.
 - In production, `NODE_ENV=production` must be set and both keys must be non-empty; otherwise startup fails fast.
 

@@ -46,7 +46,7 @@ test('installed controller refuses startup when the Python MCP catalog fails', t
 
 test('unified HTTPS launcher defaults the MCP trust certificate and preserves explicit overrides', t => {
   const { root, put } = setup(t);
-  copyFileSync('scripts/run-backend.sh', join(root, 'scripts/run-backend.sh'));
+  copyFileSync('hack/run-backend.sh', join(root, 'hack/run-backend.sh'));
   put('bin/python', `#!/usr/bin/env bash
 if [[ "$1" == -c ]]; then exit 0; fi
 if [[ "$2" == llm_d_lens.db.bootstrap_cli ]]; then exit "\${LENS_TEST_BOOTSTRAP_EXIT:-0}"; fi
@@ -54,7 +54,7 @@ printf '%s\\n' "$PRISM_MCP_URL" "$PRISM_MCP_CA_FILE" "$@"
 `);
   chmodSync(join(root, 'bin/python'), 0o755);
   for (const customCa of ['', '/custom/ca.pem']) {
-    const result = spawnSync('bash', [join(root, 'scripts/run-backend.sh')], {
+    const result = spawnSync('bash', [join(root, 'hack/run-backend.sh')], {
       encoding: 'utf8',
       env: { ...process.env, PYTHON_BIN: join(root, 'bin/python'), BACKEND_PORT: '4100',
         TLS_CERT_FILE: '/cert with spaces.pem', TLS_KEY_FILE: '/key.pem', TLS_CA_FILE: '',
@@ -68,7 +68,7 @@ printf '%s\\n' "$PRISM_MCP_URL" "$PRISM_MCP_CA_FILE" "$@"
     assert.equal(lines[lines.indexOf('--ssl-certfile') + 1], '/cert with spaces.pem');
     assert.equal(lines[lines.indexOf('--port') + 1], '4100');
   }
-  const failed = spawnSync('bash', [join(root, 'scripts/run-backend.sh')], {
+  const failed = spawnSync('bash', [join(root, 'hack/run-backend.sh')], {
     encoding: 'utf8',
     env: { ...process.env, PYTHON_BIN: join(root, 'bin/python'), LENS_TEST_BOOTSTRAP_EXIT: '42',
       LENS_DATA_DIR: join(root, 'data'), LENS_CACHE_DIR: join(root, 'cache'),
@@ -85,11 +85,10 @@ function setup(t) {
   put('src/a.js', 'export function load() { return 1; }');
   put('.reuse/catalog.json', JSON.stringify({ version: 1, entries: [{ id: 'load', path: 'src/a.js', symbols: ['load'], purpose: 'Load', boundaries: 'Local only', examples: ['src/a.js'], tests: [], testNote: 'None' }] }));
   put('.reuse/map.md', 'stale');
-  mkdirSync(join(root, 'scripts'));
-  mkdirSync(join(root, 'tools'));
-  copyFileSync('scripts/lens-local.sh', join(root, 'scripts/lens-local.sh'));
-  copyFileSync('scripts/storage-env.sh', join(root, 'scripts/storage-env.sh'));
-  symlinkSync(resolve('tools/reuse'), join(root, 'tools/reuse'));
+  mkdirSync(join(root, 'hack'));
+  copyFileSync('hack/lens-local.sh', join(root, 'hack/lens-local.sh'));
+  copyFileSync('hack/storage-env.sh', join(root, 'hack/storage-env.sh'));
+  symlinkSync(resolve('hack/reuse'), join(root, 'hack/reuse'));
   mkdirSync(join(root, 'llm-d/guides'), { recursive: true });
   put('bin/kubectl', `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$LENS_TEST_ROOT/kubectl-calls"
@@ -105,7 +104,7 @@ printf '%s\\n' "$LENS_TEST_NODE_JSON"
   execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'baseline'], { cwd: root });
   // Only service/environment boundaries are replaced. Real shell dispatch,
   // map generation, Git scope, validation and decision checks execute.
-  const run = (command, { args = [], env = {}, overrides = '', cwd = join(root, 'scripts') } = {}) => spawnSync('bash', ['-c', `
+  const run = (command, { args = [], env = {}, overrides = '', cwd = join(root, 'hack') } = {}) => spawnSync('bash', ['-c', `
     source "$1"
     shift
     ensure_node() { :; }
@@ -120,7 +119,7 @@ printf '%s\\n' "$LENS_TEST_NODE_JSON"
     }
     ${overrides}
     lens_local_main "$@"
-  `, 'test', join(root, 'scripts/lens-local.sh'), command, ...args], {
+  `, 'test', join(root, 'hack/lens-local.sh'), command, ...args], {
     cwd,
     encoding: 'utf8',
     env: {
@@ -142,7 +141,7 @@ printf '%s\\n' "$LENS_TEST_NODE_JSON"
   return { root, put, run };
 }
 
-test('restart from scripts regenerates the map and validates it before restarting services', t => {
+test('restart from hack regenerates the map and validates it before restarting services', t => {
   const { root, run } = setup(t);
   const result = run('restart');
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -164,7 +163,7 @@ test('target flags override environment and export constraints without injecting
   assert.deepEqual(JSON.parse(readFileSync(join(root, 'exported.json'))), {
     TARGET_NODE: 'node-a',
     PRISM_K8S_TARGET_NODE: 'node-a',
-    KUBECONFIG: join(root, 'scripts/cluster config.yaml'),
+    KUBECONFIG: join(root, 'hack/cluster config.yaml'),
     PRISM_GPU_PCI_ALLOWLIST: '0000:01:00.0',
     LLM_D_BENCH_NAMESPACE_PREFIX: null,
     LLM_D_BENCH_KUBECTL_TIMEOUT_SECONDS: null,
@@ -241,6 +240,23 @@ for (const command of ['stop', 'status', 'clean', 'install-node', '--help']) tes
   if (command === 'clean') assert.equal(readFileSync(join(root, 'events'), 'utf8'), 'clean:--yes\n');
 });
 
+for (const [args, expected] of [
+  [['--yes'], 'clean:--yes:default'],
+  [['--cache', '--yes'], 'clean:--yes:cache'],
+  [['--hard'], 'clean::hard'],
+  [['--all', '--yes'], 'clean:--yes:all'],
+]) test(`clean forwards ${args.join(' ')} without target-node checks`, t => {
+  const { root, run } = setup(t);
+  const result = run('clean', {
+    args,
+    env: { TARGET_NODE: 'INVALID_NODE', LLM_D_BENCH_KUBECTL_PATH: '/missing' },
+    overrides: 'cmd_clean() { printf "clean:%s:%s\\n" "$1" "$2" >> "$ROOT_DIR/events"; }',
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(!existsSync(join(root, 'kubectl-calls')));
+  assert.equal(readFileSync(join(root, 'events'), 'utf8'), `${expected}\n`);
+});
+
 test('invalid registration stops restart before touching running services', t => {
   const { root, put, run } = setup(t);
   put('src/a.js', 'export const other = 1;');
@@ -261,14 +277,14 @@ for (const command of ['start', 'restart']) test(`pending refactor decision warn
   assert.match(result.stdout, /continuing local startup/);
   assert.equal(readFileSync(join(root, '.reuse/decisions.json'), 'utf8'), ledger);
   assert.equal(existsSync(join(root, '.cache/reuse/startup-report.json')), false);
-  const check = spawnSync(process.execPath, [resolve('tools/reuse/cli.mjs'), 'check'], { cwd: root, encoding: 'utf8' });
+  const check = spawnSync(process.execPath, [resolve('hack/reuse/cli.mjs'), 'check'], { cwd: root, encoding: 'utf8' });
   assert.equal(check.status, 2, check.stdout + check.stderr);
 });
 
 for (const target of ['frontend', 'server', 'backend', 'all']) test(`targeted restart limits process and readiness work to ${target}`, t => {
   const { root } = setup(t);
   const result = spawnSync('bash', ['-c', `
-    source scripts/lens-local.sh
+    source hack/lens-local.sh
     prepare_start() { echo "prepare $1"; }
     cmd_stop() { echo "stop \${1:-all}"; }
     ensure_database() { echo database; }
@@ -303,7 +319,7 @@ test('MCP catalog failure prevents stopping existing services', t => {
 
 test('unknown restart target fails before touching the environment', t => {
   const { root } = setup(t);
-  const result = spawnSync('bash', ['-c', 'source scripts/lens-local.sh; prepare_start() { echo unexpected; }; lens_local_main restart invalid'], { cwd: root, encoding: 'utf8' });
+  const result = spawnSync('bash', ['-c', 'source hack/lens-local.sh; prepare_start() { echo unexpected; }; lens_local_main restart invalid'], { cwd: root, encoding: 'utf8' });
   assert.equal(result.status, 2);
   assert.ok(!result.stdout.includes('unexpected'));
 });
@@ -318,7 +334,7 @@ test('startup does not parse unrelated unregistered implementations', t => {
 test('frontend environment checks do not require a Python venv or Rust', t => {
   const { root } = setup(t);
   mkdirSync(join(root, 'node_modules'));
-  const result = spawnSync('bash', ['-c', 'source scripts/lens-local.sh; cmd_check frontend'], { cwd: root, encoding: 'utf8' });
+  const result = spawnSync('bash', ['-c', 'source hack/lens-local.sh; cmd_check frontend'], { cwd: root, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.ok(!result.stdout.includes('venv:'));
   assert.ok(!result.stdout.includes('rust:'));
@@ -328,7 +344,7 @@ test('targeted restart restores the actual ports of running peer services', t =>
   const { root, put } = setup(t);
   put('.dev-pids/backend.port', '8099\n');
   const result = spawnSync('bash', ['-c', `
-    source scripts/lens-local.sh
+    source hack/lens-local.sh
     is_running() { [[ "$1" == backend ]]; }
     prepare_start() { :; }
     cmd_stop() { :; }
@@ -344,7 +360,7 @@ test('restart all reloads previously recorded ports', t => {
   put('.dev-pids/backend.port', '8099\n');
   put('.dev-pids/frontend.port', '5199\n');
   const result = spawnSync('bash', ['-c', `
-    source scripts/lens-local.sh
+    source hack/lens-local.sh
     prepare_start() { :; }
     cmd_stop() { :; }
     start_services() { echo "frontend=$FRONTEND_PORT backend=$BACKEND_PORT"; }
@@ -358,7 +374,7 @@ test('targeted restart uses the recorded port for a stopped backend', t => {
   const { root, put } = setup(t);
   put('.dev-pids/backend.port', '8099\n');
   const result = spawnSync('bash', ['-c', `
-    source scripts/lens-local.sh
+    source hack/lens-local.sh
     prepare_start() { :; }
     cmd_stop() { :; }
     start_services() { echo "backend=$BACKEND_PORT"; }
@@ -371,7 +387,7 @@ test('targeted restart uses the recorded port for a stopped backend', t => {
 test('legacy running services without port state fail before stopping anything', t => {
   const { root } = setup(t);
   const result = spawnSync('bash', ['-c', `
-    source scripts/lens-local.sh
+    source hack/lens-local.sh
     is_running() { [[ "$1" == backend ]]; }
     prepare_start() { echo unexpected; }
     cmd_stop() { echo unexpected; }
@@ -385,7 +401,7 @@ test('legacy running services without port state fail before stopping anything',
 test('targeted restart refuses to move ports without updating peer proxies', t => {
   const { root } = setup(t);
   const result = spawnSync('bash', ['-c', `
-    source scripts/lens-local.sh
+    source hack/lens-local.sh
     ensure_tls() { :; }
     resolve_free_port() { echo 19001; }
     cmd_check() { echo unexpected; }
@@ -425,7 +441,7 @@ test('manual full validation runs every check and propagates failures without au
         PRISM_PYTHON_BIN: join(root, 'bin/python3'), CHECK_CALLS: calls, FAIL_CHECK: failure },
     });
     assert.equal(result.status === 0, failure === '0', result.stdout + result.stderr);
-    assert.equal(readFileSync(calls, 'utf8').trim().split('\n').length, 14);
+    assert.equal(readFileSync(calls, 'utf8').trim().split('\n').length, 15);
     assert.match(result.stdout, /PASS docs-build/);
     if (failure === '1') assert.match(result.stdout, /FAIL lint/);
     assert.equal(existsSync(join(root, '.cache/reuse/tasks')), false);

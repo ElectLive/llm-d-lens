@@ -33,7 +33,7 @@ _MOUNT_PATH = "/model-cache"
 # nobody has actually built/published — that placeholder caused download
 # Jobs to fail with ImagePullBackOff on every cluster. huggingface_hub[cli]
 # is installed at container start instead (see _download_command below).
-# Clusters that prebuild the image in docker/model-cache-downloader/Dockerfile
+# Clusters that prebuild the image in deploy/model-cache-downloader/Dockerfile
 # for faster/offline starts can still override this via the env var.
 _DEFAULT_IMAGE = "python:3.12-slim"
 _ALL_NODES_KEY = "*"

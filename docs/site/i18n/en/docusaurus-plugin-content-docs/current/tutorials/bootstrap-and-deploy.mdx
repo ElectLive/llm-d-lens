@@ -11,10 +11,9 @@ publish as a model service. Sign in with access to create clusters and deploymen
 1. Open **Clusters → Add**.
 2. Enter a cluster name, select **I already have a kubeconfig**, and upload the file.
 3. Complete **Network Proxy**, **Model gateway**, **Accelerator**, and **llm-d stack**. Keep the gateway on **Istio** and choose your cluster's accelerator.
-4. On **Model Cache**, complete the token settings and select **Create a storage volume for model-cache on this cluster**.
-5. Choose **hostPath** or **NFS**, then enter its path, capacity and other required fields.
-6. Click **Review → Finish**, wait for completion, then click **Done**.
-7. Select the new cluster and check its workers and **Deployable GPU**.
+4. On **Model Cache**, complete the token settings. A storage volume is required: choose **hostPath** or **NFS**, then enter its path and capacity.
+5. Click **Review → Finish**, wait for completion, then click **Done**.
+6. Select the new cluster and check its workers and **Deployable GPU**.
 
 No Kubernetes cluster yet? Follow [Bootstrap with Kubespray](/user-guide/clusters)
 first, then finish the same registration wizard. For storage field examples,
