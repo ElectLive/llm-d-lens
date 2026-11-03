@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from llm_d_lens.agentic.benchmark_evidence import (
     BenchmarkRecord,
     CandidateConfiguration,
@@ -152,3 +154,37 @@ def test_find_seed_candidates_returns_hard_compatible_records_across_topologies(
     )
 
     assert [record.benchmark_id for record in records] == ["baseline", "disaggregated"]
+
+
+@pytest.mark.parametrize("saved_label", ["Intel Gaudi 3", "INTEL GAUDI 3", "4x Intel Gaudi 3 96GiB"])
+@pytest.mark.parametrize("query_label", ["Intel Gaudi 3", "INTEL GAUDI 3", "4x Intel Gaudi 3 96GiB"])
+def test_hardware_aliases_match_raw_and_previously_normalized_records(saved_label, query_label):
+    dao = BenchmarkRecordDao()
+    record = _record(
+        "hardware-alias",
+        hardware=HardwareDescriptor(accelerator=saved_label, vram_per_gpu_gib=96, gpu_count=4),
+    )
+    dao.save(record)
+    filters = {
+        "accelerator": query_label,
+        "backend": "vllm",
+        "quantization": "bf16",
+        "minimum_vram_per_gpu_gib": 96,
+    }
+    assert dao.find_compatible(**filters, topology="baseline-vllm") == [record]
+    assert dao.find_seed_candidates(**filters) == [record]
+    assert dao.get(record.benchmark_id).hardware.accelerator == saved_label
+
+
+@pytest.mark.parametrize("accelerator", ["unknown", "H100 + A100"])
+def test_unknown_or_mixed_hardware_cannot_establish_dao_compatibility(accelerator):
+    dao = BenchmarkRecordDao()
+    dao.save(_record("known"))
+    filters = {
+        "accelerator": accelerator,
+        "backend": "vllm",
+        "quantization": "bf16",
+        "minimum_vram_per_gpu_gib": 96,
+    }
+    assert dao.find_compatible(**filters, topology="baseline-vllm") == []
+    assert dao.find_seed_candidates(**filters) == []

@@ -11,9 +11,18 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from llm_d_lens.agentic.public_benchmark_record.case_retrieval import (
+    CaseEvidenceBundle,
+    InternalCaseOutcome,
+    assert_case_access,
+    build_case_bundle,
+    candidate_evidence_results,
+    resolve_internal_cases,
+)
 from llm_d_lens.ai_providers.client import AIProviderClientError, AIRequestRecord
 from llm_d_lens.aic.models import DEFAULT_INPUT_TOKENS, DEFAULT_OUTPUT_TOKENS, AICEstimateRequest
 from llm_d_lens.aic.service import AICError, estimate
+from llm_d_lens.auth.contracts import Principal
 from llm_d_lens.capacity import ValidationParams, evaluate_capacity
 from llm_d_lens.cluster.sessions import require_active_session
 from llm_d_lens.configuration.models import ModelSecretConfiguration
@@ -23,8 +32,17 @@ from llm_d_lens.deploy.providers.hardware_profile import cluster_accelerator
 from llm_d_lens.deploy.providers.target_node import validate_placement
 from llm_d_lens.infrastructure.kubernetes import list_resources
 
-from .configuration import build_agentic_configuration
-from .facts import resolve_planning_facts
+from .benchmark_evidence import BenchmarkRecord
+from .configuration import AGENTIC_RUNTIME_BACKEND, build_agentic_configuration
+from .facts import (
+    PlanningEvidence,
+    PlanningHardwareSnapshot,
+    ResolvedPlanningFacts,
+    resolve_planning_facts,
+    resolve_public_rag_evidence,
+    resolve_retrieval_hardware,
+    with_public_rag_evidence,
+)
 from .generator import AICandidateGenerator, CandidateGenerationError, CandidateProposal, CandidateValidator
 from .historical_candidate_seeds import HistoricalCandidateSeedRetriever
 from .models import (
@@ -41,12 +59,17 @@ from .planner import (
     DeterministicPlanner,
     OpenAICompatiblePlanner,
     OpenAIPlannerError,
+    PlannedCandidate,
+    PlanningFacts,
+    normalize_planning_facts,
     resolve_workload_signals,
 )
+from .planning_requirements import Provenance, RuntimeIdentity
 from .planning_snapshot import PlanningSnapshotStore
 
 logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
+RetrievalContext = tuple[PlanningFacts, PlanningEvidence, InternalCaseOutcome, CaseEvidenceBundle]
 
 
 class AgenticDeploymentService:
@@ -74,6 +97,7 @@ class AgenticDeploymentService:
         on_progress: ProgressCallback | None = None,
         *,
         principal_id: str | None = None,
+        principal: Principal | None = None,
     ) -> AgenticDeploymentRun:
         profile = request.planning_facts.workload_profile
         if profile and profile.concurrency is not None and profile.request_rate is not None:
@@ -87,22 +111,21 @@ class AgenticDeploymentService:
             {
                 "phase": "validation",
                 "status": "running",
-                "message": "Validating deployment inputs and model cache.",
+                "message": (
+                    "Validating deployment inputs and model cache storage; model readiness is deferred until approval."
+                ),
             },
         )
         session = require_active_session(request.cluster_session_id)
         if request.execution_policy.mode == "automatic":
             raise ValueError("automatic Agentic execution is not enabled")
-        # Validation also returns the cache entry's credential policy.  Keep it
-        # with the plan because approval runs later and must not lose the
-        # Secret source that made this model-cache selection valid.
-        model_secret = await self._validate_model_cache(request, session.server_id)
+        model_secret = await self._validate_model_cache(request, session.server_id, require_model_ready=False)
         await self._emit_progress(
             on_progress,
             {
                 "phase": "validation",
                 "status": "complete",
-                "message": "Deployment inputs and model cache are valid.",
+                "message": "Deployment inputs and cache storage are valid; model download readiness was not checked.",
             },
         )
         planning_facts = self._planning_only_facts(
@@ -111,8 +134,17 @@ class AgenticDeploymentService:
             gpu_memory_utilization=request.gpu_memory_utilization,
             operator_preference=request.planner_prompt or "",
         )
-        deterministic = DeterministicPlanner()
         provider = OpenAICompatiblePlanner.from_provider_id(request.ai_provider_id)
+        hardware_snapshot = PlanningHardwareSnapshot(session.server_id)
+        planning_facts, public_rag, internal, cases = await self._retrieval_context(
+            session.server_id,
+            request.model,
+            planning_facts,
+            principal,
+            on_progress,
+            hardware_snapshot=hardware_snapshot,
+        )
+        deterministic = DeterministicPlanner()
         run_id = str(uuid4())
         with self._snapshot_store.capture_requests(run_id, "generator") as generator_requests:
             candidates, generation, resolved = await self._generate_candidates(
@@ -124,7 +156,11 @@ class AgenticDeploymentService:
                 provider_requested=bool(request.ai_provider_id),
                 on_progress=on_progress,
                 principal_id=principal_id,
+                authorized_records=list(internal.records),
+                hardware_snapshot=hardware_snapshot,
             )
+            resolved = with_public_rag_evidence(resolved, public_rag)
+            resolved = self._with_cases(resolved, planning_facts, cases)
         valid_candidate_count = sum(candidate.deployable for candidate in candidates)
         rejected_candidates = [candidate for candidate in candidates if not candidate.deployable]
         rejection_reasons = sorted(
@@ -147,31 +183,9 @@ class AgenticDeploymentService:
                 "message": validation_message,
             },
         )
-        performance_evidence = BenchmarkPerformanceEvidence()
-        historical_samples = performance_evidence.historical_samples(
-            request.model,
-            resolved.facts,
-            candidates,
+        deterministic_facts, deterministic_candidates, ai_candidates = self._performance_candidates(
+            request.model, resolved.facts, candidates, list(internal.records)
         )
-        ai_candidates = [
-            candidate.model_copy(
-                update={
-                    "historical_benchmarks": [asdict(sample) for sample in historical_samples.get(candidate.id, ())],
-                }
-            )
-            for candidate in candidates
-        ]
-        deterministic_facts = replace(
-            resolved.facts,
-            performance_score_inputs=performance_evidence.score_inputs(
-                request.model,
-                resolved.facts,
-                candidates,
-            ),
-        )
-        deterministic_candidates = [
-            deterministic._attach_performance_evidence(deterministic_facts, candidate) for candidate in candidates
-        ]
         decision = deterministic.decide(deterministic_facts, deterministic_candidates)
         decision_facts = deterministic_facts
         selected_candidates = deterministic_candidates
@@ -257,18 +271,7 @@ class AgenticDeploymentService:
         if decision.action != "select_candidate" or decision.candidate_id is None:
             raise ValueError("no deployable Agentic candidate: " + "; ".join(decision.unmet_constraints))
         selected = next(candidate for candidate in selected_candidates if candidate.id == decision.candidate_id)
-        candidate = AgenticCandidate(
-            id=selected.id,
-            provider_ref=selected.provider_ref,
-            replicas=selected.replicas,
-            tensor_parallel_size=selected.tensor_parallel_size,
-            prefill_replicas=selected.prefill_replicas,
-            prefill_tensor_parallel_size=selected.prefill_tensor_parallel_size,
-            guide_variant=selected.guide_variant,
-            max_model_len=selected.max_model_len,
-            gpu_memory_utilization=selected.gpu_memory_utilization,
-            evidence=selected.evidence_ids,
-        )
+        candidate = self._agentic_candidate(selected)
         run = AgenticDeploymentRun(
             id=run_id,
             status=AgenticDeploymentStatus.AWAITING_APPROVAL,
@@ -276,9 +279,10 @@ class AgenticDeploymentService:
             selected_candidate=candidate,
             model_secret=model_secret or ModelSecretConfiguration(),
             candidates=scored_candidates,
+            candidate_evidence=candidate_evidence_results(scored_candidates, cases, decision_facts),
             decision=decision,
             planning_evidence=resolved.evidence,
-            decision_evidence_ids=self._decision_evidence_ids(decision_facts, selected),
+            decision_evidence_ids=self._decision_evidence_ids(decision_facts, selected, decision),
             decision_metadata=self._decision_metadata(planner_name, planner_model, scored_candidate_count),
             planning_cluster_snapshot=resolved.cluster_snapshot,
             generator=generation["name"],
@@ -305,6 +309,7 @@ class AgenticDeploymentService:
             planner=planner_name,
             planner_fallback_reason=planner_fallback_reason,
         )
+        assert_case_access(planning_facts.configuration_cases, principal, check_public_sources=True)
         snapshot = self._snapshot_store.save(run, decision_facts, event="created")
         run.planning_snapshot_id = snapshot.snapshot_id
         run.planning_snapshot_path = snapshot.relative_path
@@ -403,18 +408,16 @@ class AgenticDeploymentService:
     async def _validate_model_cache(
         request: AgenticDeploymentCreateRequest,
         cluster_id: str,
+        *,
+        require_model_ready: bool = True,
     ) -> ModelSecretConfiguration | None:
-        """Validate the selected cache and return its deployment credential policy.
+        """Validate storage, optionally requiring ready model files and credentials.
 
-        Model files and model credentials have separate lifecycles: a ready
-        cache does not make llm-d's required ``llm-d-hf-token`` reference
-        optional.  Returning the policy here lets Agentic preserve the exact
-        source instead of treating validation as a boolean gate.
+        Planning only needs a valid storage destination. Approval checks model
+        readiness and resolves the current token source before deployment.
         """
         if request.storage_type != "model-cache" or not request.storage_volume_id:
             raise ValueError("Agentic deployment requires a model cache storage volume")
-        from llm_d_lens.deploy.router import _ready_model_cache_entry_exists
-        from llm_d_lens.model_cache.service import default_service as model_cache_service
         from llm_d_lens.storage.contracts import StorageVolumeKind, StorageVolumePurpose
         from llm_d_lens.storage.service import get_ready_volume
 
@@ -423,6 +426,11 @@ class AgenticDeploymentService:
             raise ValueError("selected storage volume is not designated for model cache use")
         if volume.kind == StorageVolumeKind.DYNAMIC_PVC:
             raise ValueError("model-cache storage for deployments cannot use dynamic-pvc volumes")
+        if not require_model_ready:
+            return None
+        from llm_d_lens.deploy.router import _ready_model_cache_entry_exists
+        from llm_d_lens.model_cache.service import default_service as model_cache_service
+
         entries = await model_cache_service().list(
             cluster_id=cluster_id,
             storage_volume_id=request.storage_volume_id,
@@ -457,7 +465,7 @@ class AgenticDeploymentService:
         return None
 
     @staticmethod
-    def _decision_evidence_ids(facts, candidate) -> list[str]:
+    def _decision_evidence_ids(facts, candidate, decision=None) -> list[str]:
         evidence_ids = [
             evidence_id for evidence_id in facts.evidence_ids if evidence_id.startswith("cluster-overview:")
         ]
@@ -465,6 +473,10 @@ class AgenticDeploymentService:
             evidence_ids.append("aic:search")
         evidence_ids.extend(candidate.evidence_ids)
         evidence_ids.extend(f"benchmark:{sample['benchmark_id']}" for sample in candidate.historical_benchmarks)
+        if decision is not None:
+            evidence_ids.extend(decision.evidence_ids)
+        if any(reference.startswith("public-rag:") for reference in evidence_ids):
+            evidence_ids.append("public-rag:query")
         return list(dict.fromkeys(evidence_ids))
 
     @staticmethod
@@ -500,6 +512,8 @@ class AgenticDeploymentService:
 
     @staticmethod
     def _planner_failure_reason(error: Exception) -> str:
+        if "context" in str(error).lower() and ("budget" in str(error).lower() or "window" in str(error).lower()):
+            return "context_budget_exceeded"
         if isinstance(error, (TypeError, ValueError, OpenAIPlannerError)):
             return "invalid_response"
         if isinstance(error, TimeoutError):
@@ -511,6 +525,8 @@ class AgenticDeploymentService:
     @staticmethod
     def _generator_failure_reason(error: CandidateGenerationError) -> str:
         message = str(error).lower()
+        if "context" in message and ("budget" in message or "window" in message):
+            return "context_budget_exceeded"
         if "mcp tool" in message:
             return "mcp_unavailable"
         if any(
@@ -540,6 +556,8 @@ class AgenticDeploymentService:
         provider_requested: bool,
         on_progress: ProgressCallback | None = None,
         principal_id: str | None = None,
+        authorized_records: list[BenchmarkRecord] | None = None,
+        hardware_snapshot: PlanningHardwareSnapshot | None = None,
     ) -> tuple[list, dict[str, Any], Any]:
         generation: dict[str, Any] = {
             "name": "deterministic",
@@ -552,7 +570,7 @@ class AgenticDeploymentService:
         }
         profile = facts.workload_profile
         if profile and (profile.concurrency is not None or profile.request_rate is not None):
-            resolved = await resolve_planning_facts(cluster_id, model, facts)
+            resolved = await resolve_planning_facts(cluster_id, model, facts, hardware_snapshot=hardware_snapshot)
             proposals = [
                 CandidateProposal(
                     provider_ref="pd-disaggregation" if prediction.mode == "disagg" else "optimized-baseline",
@@ -593,7 +611,7 @@ class AgenticDeploymentService:
                     "message": "Generating candidates with deterministic planning.",
                 },
             )
-            resolved = await resolve_planning_facts(cluster_id, model, facts)
+            resolved = await resolve_planning_facts(cluster_id, model, facts, hardware_snapshot=hardware_snapshot)
             candidates = DeterministicPlanner().candidates(resolved.facts)
             if provider_requested:
                 candidates, resolved.facts = await self._estimate_fallback_topologies(
@@ -607,6 +625,7 @@ class AgenticDeploymentService:
                 resolved.facts,
                 candidates,
                 on_progress=on_progress,
+                records=authorized_records,
             )
             generation["historical_seed_count"] = seed_count
             await self._emit_progress(
@@ -633,6 +652,7 @@ class AgenticDeploymentService:
                 facts,
                 operator_prompt,
                 on_progress=on_progress,
+                hardware_snapshot=hardware_snapshot,
             )
             generation["tool_trace"] = result.proposals.tool_trace
             generation["candidate_proposals"] = [proposal.model_dump() for proposal in result.proposals.candidates]
@@ -669,6 +689,7 @@ class AgenticDeploymentService:
                     result.resolved.facts,
                     candidates,
                     on_progress=on_progress,
+                    records=authorized_records,
                 )
                 generation["historical_seed_count"] = seed_count
                 return candidates, generation, result.resolved
@@ -677,6 +698,7 @@ class AgenticDeploymentService:
                 result.resolved.facts,
                 validated.accepted,
                 on_progress=on_progress,
+                records=authorized_records,
             )
             generation["historical_seed_count"] = seed_count
             generation.update({"name": "ai-mcp", "model": provider.settings.model, "fallback_reason": None})
@@ -684,7 +706,7 @@ class AgenticDeploymentService:
         except CandidateGenerationError as error:
             logger.warning("AI candidate generation fell back: %s", error)
             generation["fallback_reason"] = self._generator_failure_reason(error)
-            if any(
+            if generation["fallback_reason"] == "context_budget_exceeded" or any(
                 limit in str(error).lower()
                 for limit in ("too many tool calls", "tool-round limit", "tool-result budget")
             ):
@@ -697,7 +719,7 @@ class AgenticDeploymentService:
                     "message": "AI candidate generation was unavailable; deterministic generation is continuing.",
                 },
             )
-            resolved = await resolve_planning_facts(cluster_id, model, facts)
+            resolved = await resolve_planning_facts(cluster_id, model, facts, hardware_snapshot=hardware_snapshot)
             candidates = DeterministicPlanner().candidates(resolved.facts)
             candidates, resolved.facts = await self._estimate_fallback_topologies(
                 model,
@@ -710,6 +732,7 @@ class AgenticDeploymentService:
                 resolved.facts,
                 candidates,
                 on_progress=on_progress,
+                records=authorized_records,
             )
             generation["historical_seed_count"] = seed_count
             return candidates, generation, resolved
@@ -722,11 +745,11 @@ class AgenticDeploymentService:
         return [estimates_by_id.get(candidate.id, candidate) for candidate in candidates], facts
 
     async def _merge_historical_seeds(
-        self, model: str, facts, candidates: list, *, on_progress=None
+        self, model: str, facts, candidates: list, *, on_progress=None, records: list[BenchmarkRecord] | None = None
     ) -> tuple[list, int]:
         if self._historical_seed_mode == "disabled":
             return candidates, 0
-        seeds = self._historical_seed_retriever.retrieve(model, facts)
+        seeds = self._historical_seed_retriever.retrieve(model, facts, records=records if records is not None else [])
         validated_seeds: list = []
         for seed in seeds:
             validation = CandidateValidator().validate(facts, [seed.proposal])
@@ -843,6 +866,7 @@ class AgenticDeploymentService:
         on_progress: ProgressCallback | None = None,
         *,
         principal_id: str | None = None,
+        principal: Principal | None = None,
     ) -> AgenticDeploymentRun:
         await self._emit_progress(
             on_progress,
@@ -857,6 +881,9 @@ class AgenticDeploymentService:
             raise KeyError("agentic deployment run not found")
         if run.status != AgenticDeploymentStatus.AWAITING_APPROVAL:
             raise ValueError("only an awaiting approval Agentic deployment can be recalculated")
+        previous = run
+        previous_updated_at = run.updated_at
+        run = run.model_copy(deep=True)
         provider = OpenAICompatiblePlanner.from_provider_id(run.request.ai_provider_id)
 
         session = require_active_session(run.request.cluster_session_id)
@@ -874,6 +901,15 @@ class AgenticDeploymentService:
             gpu_memory_utilization=run.request.gpu_memory_utilization,
             operator_preference=request.planner_prompt,
         )
+        hardware_snapshot = PlanningHardwareSnapshot(session.server_id)
+        planning_facts, public_rag, internal, cases = await self._retrieval_context(
+            session.server_id,
+            run.request.model,
+            planning_facts,
+            principal,
+            on_progress,
+            hardware_snapshot=hardware_snapshot,
+        )
         deterministic = DeterministicPlanner()
         with self._snapshot_store.capture_requests(run.id, "generator") as generator_requests:
             candidates, generation, refreshed = await self._generate_candidates(
@@ -885,7 +921,11 @@ class AgenticDeploymentService:
                 provider_requested=bool(run.request.ai_provider_id),
                 on_progress=on_progress,
                 principal_id=principal_id,
+                authorized_records=list(internal.records),
+                hardware_snapshot=hardware_snapshot,
             )
+            refreshed = with_public_rag_evidence(refreshed, public_rag)
+            refreshed = self._with_cases(refreshed, planning_facts, cases)
         valid_candidate_count = sum(candidate.deployable for candidate in candidates)
         rejected_candidates = [candidate for candidate in candidates if not candidate.deployable]
         rejection_reasons = sorted(
@@ -908,43 +948,33 @@ class AgenticDeploymentService:
                 "message": validation_message,
             },
         )
-        refreshed = refreshed.model_copy(
-            update={
-                "facts": replace(
-                    refreshed.facts,
-                    performance_score_inputs=BenchmarkPerformanceEvidence().score_inputs(
-                        run.request.model,
-                        refreshed.facts,
-                        candidates,
-                    ),
-                )
-            }
+        deterministic_facts, deterministic_candidates, ai_candidates = self._performance_candidates(
+            run.request.model, refreshed.facts, candidates, list(internal.records)
         )
-        candidates = [
-            deterministic._attach_performance_evidence(refreshed.facts, candidate) for candidate in candidates
-        ]
-        decision = deterministic.decide(refreshed.facts, candidates)
+        decision = deterministic.decide(deterministic_facts, deterministic_candidates)
         if decision.action != "select_candidate" or decision.candidate_id is None:
             raise ValueError("no deployable Agentic candidate: " + "; ".join(decision.unmet_constraints))
 
         planner_name = "deterministic"
         planner_fallback_reason: str | None = None
         planner_model = None
-        scored_candidates = deterministic.score(refreshed.facts, candidates)[:3]
+        decision_facts = deterministic_facts
+        scored_candidates = deterministic.score(deterministic_facts, deterministic_candidates)[:3]
         planner_requests: list[AIRequestRecord] = []
         if provider is not None:
             try:
                 with self._snapshot_store.capture_requests(run.id, "planner") as planner_requests:
                     decision, scored_candidates = await provider.recommend(
                         refreshed.facts,
-                        [candidate for candidate in candidates if candidate.deployable],
+                        ai_candidates,
                         operator_prompt=request.planner_prompt,
                         on_progress=on_progress,
                     )
-                validated_candidate_ids = {candidate.id for candidate in candidates if candidate.deployable}
+                validated_candidate_ids = {candidate.id for candidate in ai_candidates}
                 if decision.candidate_id not in validated_candidate_ids:
                     raise OpenAIPlannerError("external planner selected an unvalidated candidate")
                 planner_name = "openai-compatible"
+                decision_facts = refreshed.facts
                 planner_model = getattr(getattr(provider, "settings", None), "model", None)
                 await self._emit_progress(
                     on_progress,
@@ -956,8 +986,8 @@ class AgenticDeploymentService:
                 )
             except Exception as error:
                 logger.warning("External candidate ranking fell back during recalculation: %s", error)
-                decision = deterministic.decide(refreshed.facts, candidates)
-                scored_candidates = deterministic.score(refreshed.facts, candidates)[:3]
+                decision = deterministic.decide(deterministic_facts, deterministic_candidates)
+                scored_candidates = deterministic.score(deterministic_facts, deterministic_candidates)[:3]
                 planner_fallback_reason = self._planner_failure_reason(error)
                 selected_id = decision.candidate_id
                 await self._emit_progress(
@@ -980,9 +1010,10 @@ class AgenticDeploymentService:
         selected = next(candidate for candidate in scored_candidates if candidate.id == decision.candidate_id)
         run.selected_candidate = self._agentic_candidate(selected)
         run.candidates = scored_candidates
+        run.candidate_evidence = candidate_evidence_results(scored_candidates, cases, decision_facts)
         run.decision = decision
         run.planning_evidence = refreshed.evidence
-        run.decision_evidence_ids = self._decision_evidence_ids(refreshed.facts, selected)
+        run.decision_evidence_ids = self._decision_evidence_ids(decision_facts, selected, decision)
         run.decision_metadata = self._decision_metadata(
             planner_name,
             planner_model,
@@ -1002,7 +1033,7 @@ class AgenticDeploymentService:
             refreshed,
             generation,
             candidates,
-            deterministic.ranking_trace(refreshed.facts, candidates),
+            deterministic.ranking_trace(deterministic_facts, deterministic_candidates),
             scored_candidates,
             decision,
             planner_name,
@@ -1014,9 +1045,17 @@ class AgenticDeploymentService:
         run.planner_fallback_reason = planner_fallback_reason
         run.request = run.request.model_copy(update={"planner_prompt": request.planner_prompt})
         run.updated_at = datetime.now(UTC)
-        snapshot = self._snapshot_store.save(run, refreshed.facts, event="refined")
+        if (
+            self._runs.get(run_id) is not previous
+            or previous.status != AgenticDeploymentStatus.AWAITING_APPROVAL
+            or previous.updated_at != previous_updated_at
+        ):
+            raise ValueError("Agentic plan changed during recalculation; reload the current plan")
+        assert_case_access(planning_facts.configuration_cases, principal, check_public_sources=True)
+        snapshot = self._snapshot_store.save(run, decision_facts, event="refined")
         run.planning_snapshot_id = snapshot.snapshot_id
         run.planning_snapshot_path = snapshot.relative_path
+        self._runs[run.id] = run
         logger.info(
             "Agentic plan %s recalculated: generator=%s planner=%s candidates=%d selected=%s fallback=%s",
             run.id,
@@ -1027,6 +1066,32 @@ class AgenticDeploymentService:
             run.planner_fallback_reason or run.generator_fallback_reason,
         )
         return run
+
+    @staticmethod
+    def _performance_candidates(
+        model: str,
+        facts: PlanningFacts,
+        candidates: list[PlannedCandidate],
+        records: list[BenchmarkRecord],
+    ) -> tuple[PlanningFacts, list[PlannedCandidate], list[PlannedCandidate]]:
+        evidence = BenchmarkPerformanceEvidence()
+        deterministic_facts = replace(
+            facts, performance_score_inputs=evidence.score_inputs(model, facts, candidates, records=records)
+        )
+        planner = DeterministicPlanner()
+        deterministic = [
+            planner._attach_performance_evidence(deterministic_facts, candidate) for candidate in candidates
+        ]
+        deployable_ids = {candidate.id for candidate in deterministic if candidate.deployable}
+        samples = evidence.historical_samples(model, facts, candidates, records=records)
+        ai = [
+            candidate.model_copy(
+                update={"historical_benchmarks": [asdict(sample) for sample in samples.get(candidate.id, ())]}
+            )
+            for candidate in candidates
+            if candidate.id in deployable_ids
+        ]
+        return deterministic_facts, deterministic, ai
 
     @staticmethod
     def _agentic_candidate(selected):
@@ -1048,15 +1113,212 @@ class AgenticDeploymentService:
 
     @staticmethod
     def _planning_only_facts(
-        facts, *, max_model_len: int, gpu_memory_utilization: float, operator_preference: str = ""
-    ):
-        return replace(
+        facts: PlanningFacts, *, max_model_len: int, gpu_memory_utilization: float, operator_preference: str = ""
+    ) -> PlanningFacts:
+        facts = replace(
             facts,
             context_length=max_model_len,
             gpu_memory_utilization=gpu_memory_utilization,
             operator_preference=operator_preference,
             vllm_arguments=(),
+            public_rag_evidence=(),
+            configuration_cases=(),
+            configuration_case_status=None,
+            requirements=None,
+            evidence_ids=tuple(
+                reference for reference in facts.evidence_ids if not reference.startswith("public-rag:")
+            ),
         )
+        facts = normalize_planning_facts(facts, operator_preference)
+        assert facts.requirements is not None
+        return replace(
+            facts,
+            requirements=facts.requirements.model_copy(
+                update={
+                    "runtime": RuntimeIdentity(backend=AGENTIC_RUNTIME_BACKEND),
+                    "provenance": (
+                        *facts.requirements.provenance,
+                        Provenance(
+                            source="verified_discovery",
+                            field="runtime.backend",
+                            raw=f"agentic-deployment.v1:{AGENTIC_RUNTIME_BACKEND}",
+                        ),
+                    ),
+                }
+            ),
+        )
+
+    async def _public_rag_context(
+        self,
+        cluster_server_id: str,
+        model: str,
+        facts: PlanningFacts,
+        principal: Principal | None,
+        on_progress: ProgressCallback | None,
+        *,
+        hardware_snapshot: PlanningHardwareSnapshot | None = None,
+    ) -> tuple[PlanningFacts, PlanningEvidence]:
+        await self._emit_progress(
+            on_progress,
+            {
+                "phase": "generation",
+                "status": "running",
+                "message": (
+                    "Resolving target cluster hardware and querying matching published benchmark SQL records "
+                    "before AIC planning."
+                ),
+            },
+        )
+        facts = AICandidateGenerator._apply_preference_constraints(facts, facts.operator_preference)
+        evidence = await resolve_public_rag_evidence(
+            model,
+            principal,
+            cluster_server_id=cluster_server_id,
+            planning_facts=facts,
+            hardware_snapshot=hardware_snapshot,
+        )
+        context = with_public_rag_evidence(ResolvedPlanningFacts(facts=facts, cluster_snapshot={}), evidence)
+        await self._emit_progress(
+            on_progress,
+            {
+                "phase": "generation",
+                "status": "running" if evidence.status == "available" else "fallback",
+                "message": evidence.details["message"],
+            },
+        )
+        return context.facts, evidence
+
+    @staticmethod
+    def _with_cases(
+        resolved: ResolvedPlanningFacts, facts: PlanningFacts, bundle: CaseEvidenceBundle
+    ) -> ResolvedPlanningFacts:
+        return resolved.model_copy(
+            update={
+                "facts": replace(
+                    resolved.facts,
+                    configuration_cases=facts.configuration_cases,
+                    configuration_case_status=facts.configuration_case_status,
+                    public_rag_evidence=facts.public_rag_evidence,
+                ),
+                "evidence": [
+                    *[item for item in resolved.evidence if item.source != "configuration-cases"],
+                    PlanningEvidence(
+                        id="configuration-cases:query",
+                        source="configuration-cases",
+                        status="available" if bundle.cases else "empty",
+                        details=bundle.model_dump(mode="json"),
+                    ),
+                ],
+                "trace": [
+                    *resolved.trace,
+                    {"phase": "configuration_cases", **bundle.model_dump(mode="json", exclude={"cases"})},
+                ],
+            }
+        )
+
+    async def _retrieval_context(
+        self,
+        cluster_server_id: str,
+        model: str,
+        facts: PlanningFacts,
+        principal: Principal | None,
+        on_progress: ProgressCallback | None,
+        *,
+        hardware_snapshot: PlanningHardwareSnapshot | None = None,
+    ) -> RetrievalContext:
+        facts = AICandidateGenerator._apply_preference_constraints(
+            replace(facts, model_name=model), facts.operator_preference
+        )
+        profile = facts.workload_profile
+        if profile and profile.concurrency is not None and profile.request_rate is not None:
+            raise ValueError(
+                "AIC accepts only one load target: Concurrent requests or Request rate (QPS). "
+                "Both were provided; choose one and clear the other because AIC does not support joint load targets."
+            )
+        deadline = asyncio.get_running_loop().time() + 60
+        async with asyncio.timeout_at(deadline):
+            facts, hardware_status = await resolve_retrieval_hardware(
+                cluster_server_id, model, facts, principal, hardware_snapshot=hardware_snapshot
+            )
+
+        async def public_branch():
+            try:
+                async with asyncio.timeout_at(deadline):
+                    return await self._public_rag_context(
+                        cluster_server_id, model, facts, principal, on_progress, hardware_snapshot=hardware_snapshot
+                    )
+            except TimeoutError:
+                logger.warning("event=planning_public_cases reason=total_deadline_exceeded")
+                return facts, PlanningEvidence(
+                    id="public-rag:query",
+                    source="public-benchmark-rag",
+                    status="unavailable",
+                    details={
+                        "message": "Public retrieval exceeded the total planning evidence deadline.",
+                        "code": "total_deadline_exceeded",
+                    },
+                )
+
+        async def internal_branch():
+            try:
+                async with asyncio.timeout_at(deadline):
+                    return await resolve_internal_cases(model, principal, facts=facts)
+            except TimeoutError:
+                logger.warning("event=planning_internal_cases reason=total_deadline_exceeded")
+                return InternalCaseOutcome(status="unavailable", reason="total_deadline_exceeded")
+
+        (facts, public), internal = await asyncio.gather(
+            public_branch(),
+            internal_branch(),
+        )
+        observations = (
+            *facts.public_rag_evidence,
+            *(
+                {"evidence_id": f"internal:{item.item_id}", **item.model_dump(mode="json")}
+                for item in internal.observations
+            ),
+        )
+        branches = {
+            "target_hardware": hardware_status,
+            "public_sql": {"status": public.status, **public.details.get("retrieval", {})},
+            "internal_sql": internal.metadata(),
+        }
+        hardware = public.details.get("target_hardware", {}).get("model")
+        bundle, kept = build_case_bundle(
+            observations,
+            facts,
+            model=model,
+            hardware=hardware,
+            branch_status=branches,
+            deadline=deadline,
+        )
+        return self._apply_case_selection(facts, public, internal, bundle, kept)
+
+    @staticmethod
+    def _apply_case_selection(
+        facts: PlanningFacts,
+        public: PlanningEvidence,
+        internal: InternalCaseOutcome,
+        bundle: CaseEvidenceBundle,
+        kept: tuple[dict[str, Any], ...],
+    ) -> RetrievalContext:
+        public_kept = tuple(item for item in kept if item["evidence_id"].startswith("public-rag:"))
+        facts = replace(
+            facts,
+            configuration_cases=tuple(case.model_dump(mode="json") for case in bundle.cases),
+            configuration_case_status=(
+                None if bundle.model_context_omitted else bundle.model_dump(mode="json", exclude={"cases"})
+            ),
+            public_rag_evidence=public_kept,
+        )
+        public_response = dict(public.details.get("response", {}))
+        public_response["evidence"] = [
+            {key: value for key, value in item.items() if key not in ("evidence_id", "planning_match")}
+            for item in public_kept
+        ]
+        public = public.model_copy(update={"details": {**public.details, "response": public_response}})
+        # Prompt budgets must not prune authorized history used by deterministic guardrails.
+        return facts, public, internal, bundle
 
     def list(self) -> list[AgenticDeploymentRun]:
         return sorted(self._runs.values(), key=lambda run: run.created_at, reverse=True)
@@ -1078,8 +1340,23 @@ class AgenticDeploymentService:
             run.decision = run.decision.model_copy(
                 update={
                     "candidate_id": selected.id,
+                    "fallback_candidate_ids": [
+                        candidate.id for candidate in run.candidates if candidate.id != selected.id
+                    ][:2],
                     "rationale": "Selected by the user from this plan's validated alternatives.",
+                    "evidence_ids": selected.evidence_ids,
+                    "slo_status": selected.slo_status,
+                    "slo_confidence": selected.slo_confidence,
                 }
+            )
+        run.decision_evidence_ids = self._decision_evidence_ids(
+            replace(run.request.planning_facts, evidence_ids=(), aic_predictions=()),
+            selected,
+            run.decision,
+        )
+        if run.decision_metadata is not None:
+            run.decision_metadata = run.decision_metadata.model_copy(
+                update={"selection_method": "The user selected a validated alternative from the current plan."}
             )
         run.updated_at = datetime.now(UTC)
         return run
@@ -1090,8 +1367,18 @@ class AgenticDeploymentService:
             raise KeyError("agentic deployment run not found")
         if run.status != AgenticDeploymentStatus.AWAITING_APPROVAL:
             raise ValueError("only an awaiting approval Agentic deployment can be approved")
+        previous_updated_at = run.updated_at
+        if any(
+            item.details.get("simulation") or item.details.get("target_hardware", {}).get("simulation")
+            for item in run.planning_evidence
+        ):
+            raise ValueError(
+                "Hardware simulation is validation-only and cannot be deployed. "
+                "Generate a new plan with actual hardware before approval."
+            )
 
         session = require_active_session(run.request.cluster_session_id)
+        model_secret = await self._validate_model_cache(run.request, session.server_id)
         placement = {"replicas": run.request.placement_replicas}
         if run.request.placement_node_label:
             placement["nodeLabel"] = run.request.placement_node_label
@@ -1153,9 +1440,7 @@ class AgenticDeploymentService:
                 + "; ".join(capacity_res.rejection_reasons)
             )
 
-        # Use the credential policy captured during planning.  This keeps the
-        # approve path deterministic and ensures ConfigurationAdapter can turn
-        # ``modelSecret`` into the provider's deployment policy.
+        run.model_secret = model_secret or ModelSecretConfiguration()
         accelerator = cluster_accelerator(refreshed.cluster_snapshot.get("hardware") or {})
         configuration = build_agentic_configuration(run.request, selected, run.model_secret, accelerator=accelerator)
         configuration.provenance["cluster_ref"] = {
@@ -1164,21 +1449,34 @@ class AgenticDeploymentService:
             "session_id": session.id,
             "connection": "managed-kubeconfig",
         }
-        deployment = await deployment_run_manager.start_run(
-            DeploymentRunCreateRequest(
-                configurations=[configuration],
-                runtime_binding=RuntimeBinding(placement=placement, runtime_class=run.request.runtime_class),
-                provenance={
-                    "deployment_source": {"kind": "agentic-deployment"},
-                    "cluster_session_id": session.id,
-                    "deployment_name": run.request.deployment_name,
-                    "agentic_deployment_run_id": run.id,
-                },
-            ),
-            owner_user_id=owner_user_id,
-        )
-        run.deployment_run_id = deployment.id
+        if (
+            self._runs.get(run_id) is not run
+            or run.status != AgenticDeploymentStatus.AWAITING_APPROVAL
+            or run.updated_at != previous_updated_at
+        ):
+            raise ValueError("Agentic plan changed during approval; reload the current plan")
         run.status = AgenticDeploymentStatus.DEPLOYING
+        run.updated_at = datetime.now(UTC)
+        try:
+            deployment = await deployment_run_manager.start_run(
+                DeploymentRunCreateRequest(
+                    configurations=[configuration],
+                    runtime_binding=RuntimeBinding(placement=placement, runtime_class=run.request.runtime_class),
+                    provenance={
+                        "deployment_source": {"kind": "agentic-deployment"},
+                        "cluster_session_id": session.id,
+                        "deployment_name": run.request.deployment_name,
+                        "agentic_deployment_run_id": run.id,
+                    },
+                ),
+                owner_user_id=owner_user_id,
+            )
+        except (Exception, asyncio.CancelledError):
+            run.status = AgenticDeploymentStatus.FAILED
+            run.error = "Deployment submission did not complete; verify deployment runs before creating a new plan."
+            run.updated_at = datetime.now(UTC)
+            raise
+        run.deployment_run_id = deployment.id
         run.updated_at = datetime.now(UTC)
         return run
 

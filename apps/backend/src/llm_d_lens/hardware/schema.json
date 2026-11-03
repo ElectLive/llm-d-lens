@@ -204,6 +204,20 @@
           }
         },
         "model_label_keys": { "$ref": "#/$defs/string_list" },
+        "model_family_names": { "$ref": "#/$defs/string_list" },
+        "node_memory": {
+          "type": "object",
+          "additionalProperties": false,
+          "anyOf": [
+            { "maxProperties": 0 },
+            { "required": ["per_device_label", "count_label", "unit"] }
+          ],
+          "properties": {
+            "per_device_label": { "type": "string", "minLength": 1 },
+            "count_label": { "type": "string", "minLength": 1 },
+            "unit": { "type": "string", "enum": ["", "Ki", "Mi", "Gi", "Ti", "K", "M", "G", "T"] }
+          }
+        },
         "default_backend": { "type": "string" },
         "device_class_allow_pattern": { "type": "string" },
         "discovery": { "type": "object" },

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -11,6 +12,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlparse
+
+from kubernetes.aio.config.config_exception import ConfigException
+from kubernetes.aio.config.kube_config import KubeConfigMerger
+from yaml import YAMLError
 
 from llm_d_lens.core.hashing import stable_hash
 from llm_d_lens.deploy.data_plane import GATEWAY_MODE_VALUES_PATH, PLAINTEXT_EPP_VALUES_PATH
@@ -32,9 +38,11 @@ from llm_d_lens.deploy.providers.optimized_baseline import (
 from llm_d_lens.deploy.providers.pd_disaggregation import PdDisaggregationAdapter
 from llm_d_lens.deploy.providers.precise_prefix_cache_routing import PrecisePrefixCacheRoutingAdapter
 from llm_d_lens.deploy.service import GuideAdapterDeploymentService
-from llm_d_lens.infrastructure.process import run_sync, spawn
+from llm_d_lens.infrastructure.process import kubectl_cache_dir, run_sync, spawn
 from llm_d_lens.infrastructure.storage.paths import storage_path
 from llm_d_lens.versions import router_chart_version
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeConfigurationError(ValueError):
@@ -236,6 +244,8 @@ class RestrictedKubectlRunner:
                     f"{safe_stdout}\n{safe_stderr}",
                     timed_out=result.returncode == 124,
                 )
+                if result.returncode:
+                    self._log_failure(command, result.returncode, transport="sdk")
                 return result.returncode, safe_stdout, safe_stderr
         process = await spawn(
             [str(self._kubectl_path), *command[1:]],
@@ -249,11 +259,60 @@ class RestrictedKubectlRunner:
             process.kill()
             await process.communicate()
             self._record_evidence(command, 124, "kubectl command timed out", timed_out=True)
+            self._log_failure(command, 124, transport="cli", pid=process.pid)
             return 124, "", "kubectl command timed out"
         safe_stdout = _redact_output(stdout)
         safe_stderr = _redact_output(stderr)
         self._record_evidence(command, process.returncode, f"{safe_stdout}\n{safe_stderr}")
+        if process.returncode:
+            self._log_failure(command, process.returncode, transport="cli", pid=process.pid)
         return process.returncode, safe_stdout, safe_stderr
+
+    def _log_failure(self, command: list[str], status: int, *, transport: str, pid: int | None = None) -> None:
+        environment = self._environment if transport == "cli" and self._environment is not None else os.environ
+        kubeconfig = (self._environment or os.environ).get("KUBECONFIG") or str(Path.home() / ".kube/config")
+        details: dict[str, object] = {
+            "transport": transport,
+            "operation": " ".join(command[1:3]),
+            "namespace": (
+                command[3]
+                if tuple(command[1:3]) in {("create", "namespace"), ("delete", "namespace")}
+                else _argument_after(command, "--namespace")
+            ),
+            "returncode": status,
+            "pid": pid,
+            "kubeconfig": kubeconfig,
+            "cache_dir": str(kubectl_cache_dir(kubeconfig)) if transport == "cli" else None,
+        }
+        host = None
+        try:
+            merged = KubeConfigMerger(kubeconfig)
+            if merged.config is None or not isinstance(merged.config.value, dict):
+                raise ValueError("Kubeconfig must contain a mapping")
+            config = merged.config.value
+            context = merged.config["contexts"].get_with_name(config.get("current-context"))["context"].value
+            if not isinstance(context, dict):
+                raise ValueError("Kubeconfig context must contain a mapping")
+            cluster = merged.config["clusters"].get_with_name(context.get("cluster"))["cluster"].value
+            if not isinstance(cluster, dict):
+                raise ValueError("Kubeconfig cluster must contain a mapping")
+            server = cluster.get("server")
+            details["api_server"] = _diagnostic_origin(server)
+            details["api_path_hash"] = stable_hash({"path": urlparse(server).path}) if server else None
+            details["kubeconfig_proxy"] = _diagnostic_origin(cluster.get("proxy-url"))
+            host = urlparse(server).hostname if server else None
+        except (OSError, ConfigException, KeyError, TypeError, ValueError, YAMLError) as error:
+            details["kubeconfig_error"] = type(error).__name__
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+            details[name] = _diagnostic_origin(environment.get(name))
+        for name in ("NO_PROXY", "no_proxy"):
+            entries = [entry.strip() for entry in environment.get(name, "").split(",") if entry.strip()]
+            details[name] = {
+                "api_host_explicit": host in entries if host else None,
+                "entries_hash": stable_hash({"entries": entries}),
+                "entry_count": len(entries),
+            }
+        logger.warning("deployment_kubernetes_command_failed %s", json.dumps(details, sort_keys=True))
 
     def take_evidence_refs(self) -> list[str]:
         """Return and clear structured evidence refs without exposing command output."""
@@ -1128,6 +1187,19 @@ def _argument_after(command: list[str], argument: str) -> str | None:
         return command[command.index(argument) + 1]
     except (ValueError, IndexError):
         return None
+
+
+def _diagnostic_origin(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        parsed = urlparse(value)
+        if not parsed.scheme or not parsed.hostname:
+            return "invalid"
+        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        return f"{parsed.scheme}://{host}" + (f":{parsed.port}" if parsed.port is not None else "")
+    except ValueError:
+        return "invalid"
 
 
 def _redact_output(value: bytes) -> str:

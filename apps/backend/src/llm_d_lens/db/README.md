@@ -100,12 +100,130 @@ Changing a table's shape:
 → full guide, worked examples for add-column/add-table/drop-table:
 `migrations/README.md`.
 
+## Public experiment evidence for Agentic planning
+
+Approved public Prism experiments live in `public_benchmark_records`, separately
+from authorized internal `agentic_benchmark_records`. Its migration creates the
+final public record table directly after revision `42a3e9b47726`. No application
+database is migrated by feature validation; review and apply migrations through
+the normal installation workflow.
+
+The `public_benchmark_record` DAO owns both immutable records and their publication
+lifecycle, directly reusing `BaseDao`. The `public_benchmark_record_query` and
+`public_benchmark_record_transfer` DAOs extend it for authorized public queries and
+portable SQL transfer. The `benchmark_experiment_query` DAO retrieves authorized
+internal experiments alongside published public experiments. Services never bypass
+these DAOs with raw sessions. Business contracts and services live in
+`llm_d_lens.agentic.public_benchmark_record`: public experiments are an Agentic
+planning capability, not a separate top-level feature. DAOs and ORM models remain
+in the shared database layer, alongside `agentic_benchmark_record`. Unit tests
+follow the business boundary under `tests/unit/agentic/public_benchmark_record`.
+
+This Python naming consolidation does not change stored data: existing
+`benchmark-rag.*` manifest/backup contracts, the `benchmark-rag:query:read`
+permission, the `artifacts/benchmark-rag` archive namespace, schema revision and
+database constraint names remain compatible. No compatibility wrapper modules or
+data migrations are required; operators use the renamed CLI module below.
+Agentic aggregates complete experiment/configuration/series groups before ranking
+and limiting cases. Source conditions, units, statistics and provenance must survive
+that boundary; public measurements are not proof of current deployment performance.
+Prism is the only public SQL source. Question parsing retains explicit hardware
+conditions; unrecognized or compound hardware requires clarification rather than
+an unconstrained search.
+
+Internal planning retrieves positive measurement cases and negative failure history
+under the same authorization and verification filters, with independent bounds of
+50 successes and 50 failures. Failures need no metric to inform deterministic
+guardrails; only successful records become numeric observations, and OOM outcomes
+are never promoted to measured facts. Prompt case budgets do not prune raw
+guardrail records, and AI ranking excludes candidates blocked by deterministic
+failure checks.
+Canonical evaluation records and individually identified `:stage:n` and
+`:matrix:i:stage:j` samples retain their complete identities and owning evaluation
+ACLs. Internal-only access does not require the global public-corpus query grant.
+
+The retained operator CLI is SQL-only:
+
+```bash
+.venv/bin/python -m llm_d_lens.agentic.public_benchmark_record.admin --help
+```
+
+| Command | Purpose |
+| --- | --- |
+| `rebuild` | Import and publish a reviewed Prism snapshot using an external manifest. |
+| `refresh` | Apply an approved manual Prism refresh. |
+| `status` | Inspect source publication state. |
+| `rollback` | Activate a retained manifest. |
+| `backup` | Export SQL records and pinned source bytes. |
+| `restore` | Restore a verified SQL bundle. |
+| `verify` | Verify a bundle without connecting to a database. |
+
+`rebuild` requires `--snapshot`, `--manifest` and `--approval`; `refresh` requires `--plan`
+and an explicit local `--source`. `status` accepts
+`--origin prism:public-snapshot`. `rollback` requires `--origin`,
+`--manifest-id` and `--expected-generation`. `backup` requires `--output`;
+`restore` and `verify` require `--bundle`. `rebuild` and `restore` also accept
+the optional `--initialize` flag.
+
+Except `verify`, commands require `--data-dir` and an explicit database URL in the
+environment variable selected by `--database-url-env` (default
+`LLM_D_BENCH_DATABASE_URL`). `--schema` defaults to `public`. `--initialize` initializes
+benchmark SQL storage only and does not stamp application migrations.
+SQL is the only transfer backend; there is no backend-selection flag. Refresh is
+manual-only and accepts no commit-event or periodic-trigger options.
+For example, after configuring the database URL:
+
+```bash
+.venv/bin/python -m llm_d_lens.agentic.public_benchmark_record.admin rebuild \
+  --data-dir /srv/lens-data \
+  --snapshot /srv/prism-snapshot \
+  --manifest /secure/snapshot-manifest.json \
+  --approval /secure/source-approval.json
+
+.venv/bin/python -m llm_d_lens.agentic.public_benchmark_record.admin refresh \
+  --data-dir /srv/lens-data \
+  --plan /secure/approved-plan.json \
+  --source /srv/prism-snapshot
+```
+
+The rebuild manifest uses `contract: "benchmark-rag.snapshot.v1"`, an `inventory`
+matching the shared `PinnedInventory` contract, and an explicit nonnegative integer
+`expected_experiments`. The inventory pins the source origin, ISO snapshot date,
+`complete: true`, and every approved file's relative `path`, SHA-256 `sha256` and
+`format`, sorted by path. Approval remains a separate explicit input; a manifest
+cannot expand the approved source/path allowlist. File hashes, complete inventory,
+and experiment count must match before publication.
+
+There is no built-in snapshot date, file list or experiment total. The retained
+[initial snapshot manifest](../../../tests/fixtures/public_benchmark_record/prism_initial_manifest.json)
+is test metadata only, not bundled raw benchmark data or an automatic import
+default. Later snapshots supply their own reviewed manifest without changing
+business code.
+
+The plan must pin the complete reviewed inventory and current publication base.
+Refresh, rollback and portable transfer retain source approvals, publication
+manifests and audit history.
+
+Public document ingestion, OpenSearch document search, embeddings, runtime
+configuration and public REST/MCP search are a separate optional delivery.
+Document evidence returns `disabled` / `provider_not_installed`; SQL evidence
+planning must not import or require that document implementation.
+This does not remove the preexisting private diagnostic OpenSearch adapter.
+
 ## Testing
 
-Tests never run Alembic migrations and never talk to a real PostgreSQL
-instance. The root `conftest.py` gives every test an isolated, empty in-memory
+Most tests do not run Alembic migrations or talk to PostgreSQL.
+The root `conftest.py` gives every test an isolated, empty in-memory
 SQLite database (built via `Base.metadata.create_all()`, so it always reflects
 whatever `models/*.py` currently says, regardless of migration history) and
 rebinds the process-wide engine to it for the duration of that test. This means
 DAOs and service code under test always run against a real SQLAlchemy engine,
 just not a persistent/external one.
+
+The public benchmark SQL tests under `tests/unit/db` have a more specific fixture:
+they exercise PostgreSQL behavior using an embedded `pgserver` instance and
+isolated temporary schemas, never the application database. The fixture creates
+the other tables from metadata, stamps revision `42a3e9b47726`, and applies
+`8bf2a6c1d903`. Migration tests verify metadata parity (including CHECK expressions)
+and downgrade/reupgrade of the public benchmark table. They do not certify a
+production database upgrade or replay the full migration history.

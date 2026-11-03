@@ -1,0 +1,90 @@
+{
+  "name": "authorized-agentic-baseline-v1",
+  "source_pins": {"agentic:evaluate": {"revision": "isolated-live-owner-fixture-v1"}, "prism:public-snapshot": {"revision": "2026-10-13"}},
+  "cases": [
+    {
+      "case_id": "public-default-does-not-use-internal",
+      "category": "access",
+      "request": {"question": "Reported throughput", "intent": "numeric", "filters": {"model": "Qwen3-0.6B", "metric": "throughput"}},
+      "expected_matched_items": 1, "expected_returned": 1,
+      "allowed_origins": ["prism:public-snapshot"], "allowed_evidence_types": ["raw_json"], "required_values": ["42"],
+      "forbidden_fragments": ["agentic:evaluate", "stored_float"]
+    },
+    {
+      "case_id": "owner-verified-overlap-keeps-both-citations",
+      "category": "overlap",
+      "request": {"question": "Reported throughput", "intent": "numeric", "include_internal": true, "filters": {"model": "Qwen3-0.6B", "metric": "throughput"}},
+      "expected_matched_items": 2, "expected_returned": 1,
+      "required_values": ["42"], "answer_contains": ["both provenances"],
+      "forbidden_fragments": ["22222222-2222-4222-8222-222222222222"]
+    },
+    {
+      "case_id": "other-owner-only-sees-own-internal-with-public",
+      "category": "access", "actor": "second",
+      "request": {"question": "Reported throughput", "intent": "numeric", "include_internal": true, "filters": {"model": "Qwen3-0.6B", "metric": "throughput"}},
+      "expected_matched_items": 2, "expected_returned": 2, "required_values": ["42", "42"],
+      "answer_contains": ["[agentic]"]
+    },
+    {
+      "case_id": "hidden-exact-internal-id-has-no-evidence-or-count",
+      "category": "access",
+      "request": {"question": "Reported throughput", "intent": "numeric", "include_internal": true, "filters": {"metric": "throughput", "record_id": "evaluate:22222222-2222-4222-8222-222222222222"}},
+      "expected_status": "abstained", "expected_matched_items": 0, "expected_returned": 0,
+      "expected_abstentions": ["no_exact_match"],
+      "forbidden_fragments": ["22222222-2222-4222-8222-222222222222"]
+    },
+    {
+      "case_id": "nonexistent-id-is-indistinguishable",
+      "category": "access",
+      "request": {"question": "Reported throughput", "intent": "numeric", "include_internal": true, "filters": {"metric": "throughput", "record_id": "evaluate:99999999-9999-4999-8999-999999999999"}},
+      "expected_status": "abstained", "expected_matched_items": 0, "expected_returned": 0,
+      "expected_abstentions": ["no_exact_match"]
+    },
+    {
+      "case_id": "no-evaluate-read-grant-is-public-only",
+      "category": "access", "actor": "no-evaluate",
+      "request": {"question": "Reported throughput", "intent": "numeric", "include_internal": true, "filters": {"model": "Qwen3-0.6B", "metric": "throughput"}},
+      "expected_matched_items": 1, "expected_returned": 1,
+      "allowed_origins": ["prism:public-snapshot"], "forbidden_fragments": ["agentic:evaluate"]
+    },
+    {
+      "case_id": "rag-feature-denial-precedes-storage",
+      "category": "access", "actor": "no-rag",
+      "request": {"question": "Reported throughput", "intent": "numeric", "include_internal": true, "filters": {"model": "Qwen3-0.6B", "metric": "throughput"}},
+      "expected_error": "forbidden"
+    },
+    {
+      "case_id": "anonymous-denied",
+      "category": "access", "actor": "anonymous",
+      "request": {"question": "Reported throughput", "intent": "numeric", "include_internal": true, "filters": {"model": "Qwen3-0.6B", "metric": "throughput"}},
+      "expected_error": "unauthenticated"
+    },
+    {
+      "case_id": "stale-principal-conflicts",
+      "category": "access", "actor": "stale",
+      "request": {"question": "Reported throughput", "intent": "numeric", "include_internal": true, "filters": {"model": "Qwen3-0.6B", "metric": "throughput"}},
+      "expected_error": "conflict"
+    },
+    {
+      "case_id": "legacy-simulation-id-stays-ineligible",
+      "category": "provenance", "actor": "admin",
+      "request": {"question": "Reported throughput", "intent": "numeric", "include_internal": true, "filters": {"metric": "throughput", "record_id": "evaluate:deadbeef"}},
+      "expected_status": "abstained", "expected_matched_items": 0, "expected_returned": 0,
+      "expected_abstentions": ["no_exact_match"]
+    },
+    {
+      "case_id": "ownerless-context-stays-ineligible-even-admin",
+      "category": "provenance", "actor": "admin",
+      "request": {"question": "Reported throughput", "intent": "numeric", "include_internal": true, "filters": {"metric": "throughput", "record_id": "evaluate:33333333-3333-4333-8333-333333333333"}},
+      "expected_status": "abstained", "expected_matched_items": 0, "expected_returned": 0,
+      "expected_abstentions": ["no_exact_match"]
+    },
+    {
+      "case_id": "stored-float-unit-boundaries-preserved",
+      "category": "numeric", "actor": "second",
+      "request": {"question": "Reported throughput", "intent": "numeric", "include_internal": true, "filters": {"metric": "throughput", "unit": "tokens/s", "record_id": "evaluate:22222222-2222-4222-8222-222222222222"}},
+      "expected_matched_items": 1, "expected_returned": 1, "required_values": ["42.0"],
+      "allowed_origins": ["agentic:evaluate"], "allowed_evidence_types": ["agentic_measurement"]
+    }
+  ]
+}

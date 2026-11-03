@@ -836,6 +836,15 @@ Gateway 命名空间必须清理成功：失败或超时返回 `502 cluster_gate
 
 返回一个集群的实时 Kubernetes 概览信息，包括节点、GPU、命名空间、缓存镜像以及组件健康状况摘要。该路由还会在返回实时快照的同时报告当前的集群记录。
 
+显存容量优先使用 Prometheus 遥测，其次使用 DRA ResourceSlice 容量。
+两者均未提供容量时，已注册的硬件 profile 可以读取工作节点上的每卡显存和设备数量标签。
+NVIDIA profile 使用 GFD 的 `nvidia.com/gpu.memory`（MiB）和 `nvidia.com/gpu.count`；
+标签数量必须与识别的设备容量一致，避免将共享副本数计入物理显存。
+该补充来源仅提供静态总容量，不提供当前显存占用或剩余显存。
+缺少占用遥测时，设备的 `vramUsedBytes` 和 `vramUsagePercent` 保持 `null`，界面显示未知而非零占用。
+标签缺失或无效时，容量仍保持未知，不会根据型号猜测显存。
+标签名称和单位由 profile 的 `planning.node_memory` 声明；未声明的 profile 不启用该补充来源。
+
 <Tabs>
   <TabItem value="rest-api" label="REST API">
     **`GET /api/cluster/overview`**

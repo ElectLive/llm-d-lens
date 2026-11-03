@@ -102,7 +102,8 @@ flowchart TD
    SLO, workload profile, and preference are optional inputs.
 2. When creating a plan, the backend validates the active cluster session, and verifies that the
    selected storage is ready for the current cluster, has purpose `model-cache`, is not a
-   dynamic-PVC volume, and already has a ready cache entry for the target model.
+   dynamic-PVC volume. Planning and refinement do not require downloaded model files;
+   approval checks model-cache readiness and resolves the current credential policy.
 3. When external AI is configured, AI Generator starts from deployment intent and uses native tool
    calling to query cluster and AIC in parallel first; only after that may it query allowlisted
    historical evidence. Before submission it must obtain cluster overview and attempt at least one
@@ -119,9 +120,19 @@ flowchart TD
 6. The recommendation remains in `awaiting_approval`. The user may select a different validated
    candidate or click Recalculate. The new preference in Recalculate **replaces** the old
    preference and reloads live facts and candidates; it does not retain the previous round's
-   preference.
+   preference. Refinement commits only after access revalidation and snapshot persistence;
+   failures preserve the previous plan, and concurrent plan changes reject a stale refinement.
+   Selecting an alternative updates decision SLO/evidence metadata without rewriting the
+   earlier planning audit snapshot.
 7. Deployment starts only after explicit user approval. Before approval, resources and candidate
-   deployability are validated again to avoid using a stale plan.
+   deployability are validated again to avoid using a stale plan. The service rechecks the plan
+   version and leaves the approval state before submitting to Deploy. Failed or cancelled
+   submissions leave a failed Agentic run, not an automatically retryable approval.
+
+SLO conclusions require every requested latency metric at the requested statistic.
+Missing historical or AIC metrics remain unknown, and TTFT/TPOT alone cannot prove
+an end-to-end latency target. Historical PD similarity includes both prefill and
+decode TP/replica dimensions; changing prefill cannot remain an exact measured match.
 
 ### UI inputs and interaction
 
@@ -621,6 +632,108 @@ This document describes how Agentic Deploy handles structured and unstructured e
 Structured data consists of `BenchmarkRecord`: model, hardware, runtime, workload, candidate configuration, measured performance metrics, outcome, and failure reason. Records reside in `agentic_benchmark_records` and are authoritative for performance numbers, failure facts, and candidate-level predictions.
 
 Live cluster overview is also structured evidence, with the highest authority: it determines whether candidates satisfy current VRAM, GPU, CPU-buffer, and other hard constraints. Historical benchmarks, AIC, and AI cannot override live-resource conclusions.
+
+#### Multi-source experiment planning
+
+Creation and refinement share server-resolved evidence from authorized internal
+experiments and approved public Prism experiments. Public experiments remain in
+PostgreSQL `public_benchmark_records`; they are not document search results.
+The actual authenticated principal needs global `benchmark-rag:query:read` to
+retrieve public observations or access plans containing them. Internal experiments
+retain their existing resource authorization.
+
+Public benchmark contracts and services live in `llm_d_lens.agentic.public_benchmark_record`.
+This is an Agentic subpackage, with no top-level compatibility package. Its DAOs
+and ORM models stay in the shared database layer.
+`PublicBenchmarkRecordDao` directly extends `BaseDao` and owns immutable writes and
+the publication lifecycle; query and transfer DAOs reuse that implementation.
+Python names are aligned with the internal `agentic_benchmark_record` domain,
+without changing stored records, schema revisions, existing `benchmark-rag.*`
+contracts, the query permission or the source archive namespace.
+
+`PlanningRequirements` preserves explicit workload, latency targets, provenance
+and unknown fields. Form fields start blank: examples and AIC/use-case defaults
+are not explicit requirements, and mean input length is not copied into P95.
+Live hardware determines the public query's exact accelerator model; unknown or
+mixed models are reported rather than replaced with a cross-hardware fallback.
+Model aliases aid retrieval but do not prove unique identity or compatibility.
+
+Each creation or refinement uses one request-local hardware discovery snapshot
+for planning facts and public evidence retrieval. A new refinement discovers
+hardware again; deployment approval performs its own fresh resource validation.
+Historical matching receives the serving backend from the deployment runtime
+configuration, while unverified runtime versions remain unknown.
+TPOT requirements accept per-token units such as `20 ms/token` and `0.02 s/token`;
+these normalize to milliseconds without relaxing unit validation for other metrics.
+Unsupported units, including Unicode microsecond spellings, produce requirement
+errors rather than defaulting to milliseconds. The evidence presentation shows
+every latency target with its statistic, comparison operator and observations,
+including unsatisfied targets when another statistic passes.
+
+`ConfigurationCase` retains experiment/configuration/series identity, original
+measurements, units, statistics, configuration, provenance, differences and
+unknowns. Each SQL branch aggregates complete experiments before ranking and
+selecting at most 50 cases. Explicit workload fit precedes comparable lower
+latency; without explicit workload there is no workload penalty. Latency targets
+select metric/statistic axes, not distance from the target. Different statistics
+are not mixed; Pareto comparison requires equal available axes. Missing or
+nonpositive latency is unknown. A case with neither comparable workload nor valid
+latency is a labelled fallback reference, not low-latency evidence.
+Cost preference scoring accepts positive finite numeric TP and replica counts,
+including imported decimal strings, without rewriting the source configuration.
+Missing counts retain the single-device default; invalid explicit counts are
+logged and marked unknown, and do not receive a cost preference bonus.
+
+Import and query comparisons share numeric workload, metric and percentile
+normalization. A numeric filter such as `target_qps=1.5` matches the equivalent
+stored decimal representation; `latency` and `e2e` identify end-to-end latency,
+and `p99p9` and `p99.9` identify the same percentile. These equivalences do not
+merge different statistics or discard original source evidence.
+
+The shared evidence bundle keeps at most 10 complete cases within its
+16,000-byte serialized budget, preserving experiment rank. Historical observations
+inform candidate generation and selection, but do not prove current SLO compliance
+or override live-resource validation. AIC estimates remain a distinct evidence type.
+Source references stay in the server audit; model-facing aliases and explanations
+must not be presented as independently verified source usage.
+
+The server recognizes explicit technique labels in `run_id`, `source_path` and
+`source_info.file_identifier`, deduplicating them by provider into model-facing
+`related_provider_ref`, `technique_description` and `mapping_basis=source_label`.
+A recognized source label establishes the technique-to-provider mapping; the
+generator and selector must not describe that relationship as unverified or
+require additional proof of it. Configuration equivalence and performance
+transfer still require validation: the mapping alone does not prove identical
+serving settings, a performance advantage or current SLO compliance. Missing
+TTFT remains unknown, and an inapplicable AIC estimate is neutral, not a reason
+to penalize the technique. Raw source paths and matching evidence stay in the
+server audit rather than being forwarded to the model.
+
+Planning consumes SQL experiments only. Public document ingestion, retrieval,
+packet contracts and search UI are outside this capability. The existing private
+diagnostic search adapter remains separate and unchanged.
+
+The operator `rebuild` command requires an explicit local `--snapshot`,
+`--manifest` and `--approval`. The external `benchmark-rag.snapshot.v1` manifest
+contains a complete, canonically sorted `PinnedInventory` (origin, snapshot date,
+file paths, SHA-256 hashes and formats) and a nonnegative integer
+`expected_experiments`. Source/path approval remains separate; exact inventory,
+hashes and experiment count are checked before activation. No initial snapshot
+date, file list or experiment count is hardcoded in business code. The initial
+batch's manifest remains a test fixture, without raw source data. Subsequent
+snapshots can be imported without code changes; refresh still uses its reviewed
+plan and current publication base.
+
+An explicitly approved refresh with an empty inventory and `allow_empty=True`
+publishes an empty release, removing the previous files from the active
+publication. It retains the normal approval and publication-generation checks;
+an empty inventory without that opt-in is rejected.
+
+The deployment workspace shows internal SQL experiments and public SQL observations
+separately, including retrieval failures and unknowns.
+No permission, no match and unavailable outcomes are not interchangeable.
+Approval still revalidates resources and model-cache readiness and requires
+explicit user approval; retrieval never authorizes deployment.
 
 #### Unstructured data
 

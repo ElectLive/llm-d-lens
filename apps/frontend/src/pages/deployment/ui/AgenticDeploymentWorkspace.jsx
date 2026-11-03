@@ -1,5 +1,5 @@
 import { requestJson } from '../../../shared/api/httpClient';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ArrowLeft, CheckCircle2, ChevronDown, Cpu, FileStack, LoaderCircle, RotateCcw, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
 import { Badge, StatusChip } from '../../../shared/ui/Badge';
 import { Button } from '../../../shared/ui/Button';
@@ -11,7 +11,7 @@ import PodPlacementControl from '../../../shared/ui/PodPlacementControl';
 import { listDeploymentNodeLabels } from '../../optimization';
 import { listAIProviders } from '../../ai-providers';
 import { streamAgenticRecommendation, streamAgenticRefinement } from '../api/agenticDeploymentBackend';
-import { candidateAnalysis, generatorLabel, historicalBenchmarkLabel, historicalEvidenceSummary, relaxedAicCandidates } from '../lib/agenticPresentation';
+import { candidateAnalysis, generatorLabel, historicalBenchmarkLabel, historicalEvidenceSummary, planningEvidenceLabel, publicRagMatchSummary, relaxedAicCandidates, retrievalBranchSummaries } from '../lib/agenticPresentation';
 
 function api(path, options = {}) {
     return requestJson(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -129,13 +129,67 @@ function CandidateRow({ candidate, selected, analysis, onDeploy, deploying, canD
     );
 }
 
-function evidenceLabel(item, hasAicPrediction) {
-    if (item.id === 'aic:support' && hasAicPrediction) return null;
-    if (item.id === 'aic:search') return 'AIC performance prediction';
-    if (item.id.startsWith('cluster-overview:')) return 'Live cluster capacity';
-    if (item.id === 'deploy-history') return 'Deployment history';
-    if (item.id === 'simulation-history') return 'Simulation history';
-    return item.source;
+export function RetrievalEvidenceSources({ run }) {
+    const usedIds = new Set(run.decision_evidence_ids || []);
+    const usage = (ids) => ids.some((id) => usedIds.has(id)) ? 'used for selection' : 'context only';
+    const caseReferences = (item) => [
+        item.case_id,
+        ...(item.measurements || []).map((measurement) => measurement.evidence_id),
+        ...(item.provenance || []).map((citation) => `benchmark:${citation.benchmark_id}`),
+    ];
+    return retrievalBranchSummaries(run).map((branch) => {
+        const details = branch.evidence?.details || {};
+        const observations = details.response?.evidence || [];
+        const matches = new Map((details.matches || []).map((match) => [match.evidence_id, match]));
+        const sourceUsage = usage([
+            branch.evidence?.id,
+            ...observations.map((observation) => `public-rag:${observation.item_id}`),
+            ...(branch.cases || []).flatMap(caseReferences),
+        ]);
+        return <details key={branch.id} className="group p-3 text-theme-text">
+            <summary className="cursor-pointer list-none">
+                <span className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-2 text-xs"><ChevronDown size={14} className="-rotate-90 group-open:rotate-0" />{branch.label}</span>
+                    <Badge tone={branch.status === 'available' ? 'info' : 'neutral'} size="xs">{branch.status.replaceAll('_', ' ')}</Badge>
+                </span>
+                <span className="mt-1 block text-[11px] text-theme-muted">{branch.summary}</span>
+            </summary>
+            <div className="mt-3 space-y-2 text-[11px] text-theme-muted">
+                <Badge tone={sourceUsage === 'used for selection' ? 'success' : 'neutral'} size="xs">{sourceUsage}</Badge>
+                {branch.warning && <p>{branch.warning}</p>}
+                <p>Historical measurements apply to their reported conditions, not current deployment SLO compliance. Compare model, hardware, runtime and workload before using them alongside AIC estimates.</p>
+                {details.message && <p>{details.message}</p>}
+                {details.retrieval?.mode && <p>Retrieval: {details.retrieval.mode.replaceAll('_', ' ')}.</p>}
+                {details.retrieval?.model_identity_aliases && <p>Query model name aliases: {details.retrieval.model_identity_aliases.join(', ')}. Stored names use the same rule; source labels and citations are unchanged.</p>}
+                {branch.id === 'public_sql' && <ul className="space-y-3">
+                    {observations.map((observation) => <li key={observation.item_id}>
+                        <p>{observation.metric} {observation.statistic}: {observation.value} {observation.unit}</p>
+                        <Badge tone={usedIds.has(`public-rag:${observation.item_id}`) ? 'success' : 'neutral'} size="xs">{usage([`public-rag:${observation.item_id}`])}</Badge>
+                        {publicRagMatchSummary(matches.get(`public-rag:${observation.item_id}`)).map((line) => <p key={line}>{line}</p>)}
+                        <p className="break-all">{observation.citation?.source_path} @ {observation.citation?.source_revision}</p>
+                        <p className="break-all">SHA-256: {observation.citation?.sha256}</p>
+                    </li>)}
+                </ul>}
+                {branch.id === 'internal_sql' && <ul className="space-y-3">
+                    {branch.cases.map((item) => <li key={item.case_id}>
+                        <p className="font-semibold text-theme-text">{item.model} / {item.hardware} / {item.experiment_id}</p>
+                        <Badge tone={usage(caseReferences(item)) === 'used for selection' ? 'success' : 'neutral'} size="xs">{usage(caseReferences(item))}</Badge>
+                        <p>Applicability: {item.applicability}. Historical latency target status: {item.latency_status}.</p>
+                        <p>Configuration: {JSON.stringify(item.configuration)}</p>
+                        <p>Workload: {JSON.stringify(item.workload)}</p>
+                        {item.known_differences?.length > 0 && <p>Known differences: {item.known_differences.join(', ')}.</p>}
+                        {item.unknown_fields?.length > 0 && <p>Unknown fields: {item.unknown_fields.join(', ')}.</p>}
+                        {item.ranking?.queue === 'fallback' && <p>Fallback reference only, not low-latency evidence.</p>}
+                        <ul>{item.measurements?.map((measurement) => <li key={measurement.evidence_id}>{measurement.metric} {measurement.statistic}: {measurement.value} {measurement.unit} ({measurement.quality})</li>)}</ul>
+                        {item.provenance?.map((citation, index) => <p key={index} className="break-all">Benchmark: {citation.benchmark_id}; {citation.source_path} @ {citation.source_revision}</p>)}
+                        {item.validation_required?.length > 0 && <p>Validation required: {item.validation_required.join(', ')}.</p>}
+                    </li>)}
+                </ul>}
+                {details.response?.truncated && <p>More observations matched; only the bounded retrieved subset was supplied to planning.</p>}
+                {!observations.length && !branch.cases?.length && <p>No retained evidence details for this source.</p>}
+            </div>
+        </details>;
+    });
 }
 
 function fallbackSummary(reason) {
@@ -218,7 +272,6 @@ export default function AgenticDeploymentWorkspace({ draft, embedded = false, on
                     ttft_slo_ms: numeric(requirements.ttftSloMs), tpot_slo_ms: numeric(requirements.tpotSloMs),
                     workload_profile: {
                         mean_input_tokens: numeric(requirements.inputTokens),
-                        p95_input_tokens: numeric(requirements.inputTokens),
                         mean_output_tokens: numeric(requirements.outputTokens),
                         concurrency: numeric(requirements.concurrency),
                         request_rate: numeric(requirements.requestRate),
@@ -305,6 +358,7 @@ export default function AgenticDeploymentWorkspace({ draft, embedded = false, on
     const relaxedConfigs = relaxedAicCandidates(run);
     const clusterDetails = run?.planning_evidence?.find((item) => item.id.startsWith('cluster-overview:'))?.details;
     const usedAiProviderName = aiProviders.find((provider) => provider.id === run?.request?.ai_provider_id)?.name;
+    const ragHardware = run?.planning_evidence?.find((item) => item.source === 'public-benchmark-rag')?.details?.target_hardware;
 
     const content = (
         <>
@@ -357,8 +411,8 @@ export default function AgenticDeploymentWorkspace({ draft, embedded = false, on
                     <details open className="mt-4 border-t border-slate-800 pt-3">
                         <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-semibold text-slate-300"><ChevronDown size={14} />Workload estimate <span className="font-normal text-slate-500">Optional request shape and demand.</span></summary>
                         <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                            {input('Input tokens per request', 'inputTokens', { min: '1', step: '1', placeholder: 'e.g. 4000' })}
-                            {input('Output tokens per request', 'outputTokens', { min: '1', step: '1', placeholder: 'e.g. 1000' })}
+                            {input('Mean input tokens per request', 'inputTokens', { min: '1', step: '1', placeholder: 'e.g. 4000' })}
+                            {input('Mean output tokens per request', 'outputTokens', { min: '1', step: '1', placeholder: 'e.g. 1000' })}
                             {input('Concurrent requests', 'concurrency', { min: '1', step: '1' })}
                             {input('Request rate (QPS)', 'requestRate', { min: '0.01', step: 'any' })}
                         </div>
@@ -377,10 +431,22 @@ export default function AgenticDeploymentWorkspace({ draft, embedded = false, on
                 {run.generator_fallback_reason && <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-100"><span className="font-semibold">Built-in candidate generation used.</span> {generatorFallbackSummary(run.generator_fallback_reason)}</div>}
                 {run.planner_fallback_reason && <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-100"><span className="font-semibold">Built-in ranking used.</span> {fallbackSummary(run.planner_fallback_reason)}</div>}
                 <div className="grid gap-4">
-                    <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900/45"><div className="flex items-center gap-2 border-b border-slate-800 bg-slate-950/55 px-4 py-3"><Cpu size={15} className="text-cyan-300" /><h3 className="text-xs font-semibold text-slate-200">Validated alternatives</h3></div>{run.candidates?.map((candidate, index) => <CandidateRow key={candidate.id} candidate={candidate} selected={candidate.id === run.selected_candidate?.id} analysis={candidateAnalysis(candidate, index, aicConfigs, relaxedConfigs, clusterDetails)} onDeploy={deployCandidate} deploying={deployingCandidateId === candidate.id} canDeploy={canDeploy} />)}{canDeploy && <div className="border-t border-slate-800 p-3"><textarea className="min-h-20 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-200" value={refinementPrompt} onChange={(event) => setRefinementPrompt(event.target.value)} maxLength={2000} placeholder="Describe unmet needs. The external planner can choose and score up to ten validated candidates." />{refining && <GenerationProgress events={refinementEvents} />}<div className="mt-2 flex justify-end"><Button size="xs" variant="secondary" onClick={refinePlan} isLoading={refining} disabled={!refinementPrompt.trim()}>Recalculate selection</Button></div></div>}</div>
+                    <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900/45"><div className="flex items-center gap-2 border-b border-slate-800 bg-slate-950/55 px-4 py-3"><Cpu size={15} className="text-cyan-300" /><h3 className="text-xs font-semibold text-slate-200">Validated alternatives</h3></div>{run.candidates?.map((candidate, index) => <CandidateRow key={candidate.id} candidate={candidate} selected={candidate.id === run.selected_candidate?.id} analysis={candidateAnalysis(candidate, index, aicConfigs, relaxedConfigs, clusterDetails)} onDeploy={deployCandidate} deploying={deployingCandidateId === candidate.id} canDeploy={canDeploy && !ragHardware?.simulation} />)}{canDeploy && <div className="border-t border-slate-800 p-3"><textarea className="min-h-20 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-200" value={refinementPrompt} onChange={(event) => setRefinementPrompt(event.target.value)} maxLength={2000} placeholder="Describe unmet needs. The external planner can choose and score up to ten validated candidates." />{refining && <GenerationProgress events={refinementEvents} />}<div className="mt-2 flex justify-end"><Button size="xs" variant="secondary" onClick={refinePlan} isLoading={refining} disabled={!refinementPrompt.trim()}>Recalculate selection</Button></div></div>}</div>
                     <div className="rounded-lg border border-slate-800 bg-slate-900/45"><div className="flex items-center gap-2 border-b border-slate-800 bg-slate-950/55 px-4 py-3"><FileStack size={15} className="text-cyan-300" /><h3 className="text-xs font-semibold text-slate-200">Decision evidence</h3></div><div className="divide-y divide-slate-800/70">
+                        <RetrievalEvidenceSources run={run} />
                         {run.decision_metadata && <div className="p-3"><p className="text-xs font-semibold text-slate-200">{run.decision_metadata.planner === 'openai-compatible' ? 'External planner' : 'Prism deterministic planner'}</p><p className="mt-1 text-[11px] text-slate-400">Candidates: {run.generator === 'ai-mcp' ? 'AI-generated with MCP evidence' : 'Prism deterministic generator'}</p>{usedAiProviderName && <p className="mt-1 text-[11px] text-slate-400">AI provider: {usedAiProviderName}</p>}{run.generator_model && <p className="mt-1 text-[11px] text-slate-400">Generator model: {run.generator_model}</p>}{run.decision_metadata.planner_model && <p className="mt-1 text-[11px] text-slate-400">Scoring model: {run.decision_metadata.planner_model}</p>}<p className="mt-2 text-[11px] leading-4 text-slate-400">{run.decision_metadata.selection_method}</p><p className="mt-2 text-[11px] leading-4 text-slate-500">{run.decision_metadata.score_method}</p></div>}
-                        {run.planning_evidence?.length ? run.planning_evidence.map((item) => { const label = evidenceLabel(item, hasAicPrediction); if (!label) return null; const used = (run.decision_evidence_ids || []).includes(item.id); return <div key={`${item.source}:${item.id}`} className="p-3"><div className="flex items-center justify-between gap-2"><span className="text-xs text-slate-200">{label}</span><Badge tone={used ? 'success' : 'neutral'} size="xs">{used ? 'used for selection' : 'context only'}</Badge></div>{item.id === 'aic:search' && <p className="mt-1 text-[10px] text-slate-500">Support was verified before the prediction search.</p>}</div>; }) : <EmptyState icon={<ShieldCheck size={24} />} title="No evidence available" message="The recommendation remains constrained by the live cluster checks." />}
+                        {run.planning_evidence?.length ? run.planning_evidence.map((item) => {
+                            const label = planningEvidenceLabel(item, hasAicPrediction);
+                            if (!label) return null;
+                            const used = (run.decision_evidence_ids || []).includes(item.id);
+                            return <div key={`${item.source}:${item.id}`} className="p-3">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="text-xs text-slate-200">{label}</span>
+                                    <Badge tone={used ? 'success' : 'neutral'} size="xs">{used ? 'used for selection' : 'context only'}</Badge>
+                                </div>
+                                {item.id === 'aic:search' && <p className="mt-1 text-[10px] text-slate-500">Support was verified before the prediction search.</p>}
+                            </div>;
+                        }) : <EmptyState icon={<ShieldCheck size={24} />} title="No evidence available" message="The recommendation remains constrained by the live cluster checks." />}
                     </div></div>
                 </div>
             </section>}

@@ -271,7 +271,11 @@ there's no separate "migrations database" concept here.
   must be a *new* migration, not an edit to history.
 - Don't delete or renumber existing files in `versions/` -- the chain is linked
   by each script's `revision`/`down_revision` pair, not by filename or order on
-  disk.
+  disk. An explicitly approved consolidation of undeployed migrations is an
+  exception: public benchmark revision `8bf2a6c1d903` follows `42a3e9b47726`
+  directly and creates `public_benchmark_records` in its final shape.
+- Freeze schema definitions in migration scripts; do not import live ORM models
+  or mutable application contracts to construct historical DDL.
 - Don't run `Base.metadata.create_all()` against a database that already has
   real data in it as a substitute for a migration -- it silently does nothing
   useful there (see above) and can mask a schema drift you actually needed to
@@ -281,10 +285,13 @@ there's no separate "migrations database" concept here.
 
 ## Testing
 
-The test suite intentionally does **not** run these migrations -- it builds a
+Most of the test suite does **not** run these migrations -- it builds a
 fresh in-memory SQLite database per test via `Base.metadata.create_all()` (see
 root `conftest.py`), which always reflects the current models, not the migration
-history. If you want to sanity-check a migration itself (rather than just the
-resulting schema), run it against a scratch PostgreSQL database (e.g. an
-embedded instance via `pgserver`) and confirm `alembic upgrade head` /
-`alembic downgrade -1` both succeed cleanly.
+history. The public benchmark tests in `tests/unit/db/test_public_benchmark_migration.py`
+use an isolated embedded PostgreSQL instance and temporary schemas. They build
+the other tables from metadata, stamp `42a3e9b47726`, upgrade to `8bf2a6c1d903`,
+compare the result with model metadata (including CHECK expressions), and verify
+downgrade/reupgrade. Downgrade drops the public benchmark table and its data;
+reupgrade recreates it empty. These checks never connect to the application
+database and do not replay or certify the full migration history.

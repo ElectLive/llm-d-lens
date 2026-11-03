@@ -1,6 +1,7 @@
 """Tests for portable Deploy runtime path discovery."""
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -434,6 +435,118 @@ def test_structured_startup_diagnostics_remain_namespace_scoped(tmp_path: Path):
     runner._validate(["kubectl", "get", "pods", "--namespace", "llm-d-bench-pd-test", "-o", "json"])
     with pytest.raises(RuntimeConfigurationError, match="outside the configured allowlist"):
         runner._validate(["kubectl", "get", "pods", "--namespace", "default", "-o", "json"])
+
+
+@pytest.mark.asyncio
+async def test_failed_cli_logs_selected_cluster_without_credentials(tmp_path, monkeypatch, caplog):
+    from unittest.mock import AsyncMock
+
+    from llm_d_lens.deploy.runtime import composition
+
+    kubeconfig = tmp_path / "cluster.yaml"
+    kubeconfig.write_text(
+        """apiVersion: v1
+kind: Config
+current-context: selected
+contexts:
+- name: selected
+  context: {cluster: target, user: admin}
+clusters:
+- name: unused
+  cluster: {server: 'https://unused.example:6443'}
+- name: target
+  cluster:
+    server: https://api-user:api-password@10.1.2.3:6443/private-path?token=api-token
+    proxy-url: http://explicit-user:explicit-password@explicit.example:3128/private
+users:
+- name: admin
+  user: {token: kube-token}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PRISM_KUBERNETES_BACKEND", "cli")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy-user:proxy-password@proxy.example:3128/private")
+    monkeypatch.setenv("NO_PROXY", "localhost,10.1.2.3")
+    monkeypatch.setenv("no_proxy", "localhost")
+    runner = RestrictedKubectlRunner(tmp_path / "kubectl", "llmd-", kubeconfig=str(kubeconfig))
+    monkeypatch.setenv("HTTPS_PROXY", "http://different.example:8080")
+    process = AsyncMock()
+    process.pid = 123
+    process.returncode = 1
+    process.communicate.return_value = (b"", b"couldn't get current server API group list")
+    spawn = AsyncMock(return_value=process)
+    monkeypatch.setattr(composition, "spawn", spawn)
+
+    result = await runner(["kubectl", "rollout", "status", "deployment/vllm", "--namespace", "llmd-test"])
+
+    assert result == (1, "", "couldn't get current server API group list")
+    spawn.assert_awaited_once()
+    record = next(record for record in caplog.records if "deployment_kubernetes_command_failed" in record.message)
+    details = json.loads(record.message.split(" ", 1)[1])
+    assert details["transport"] == "cli"
+    assert details["pid"] == 123
+    assert details["namespace"] == "llmd-test"
+    assert details["api_server"] == "https://10.1.2.3:6443"
+    assert details["HTTPS_PROXY"] == "http://proxy.example:3128"
+    assert details["kubeconfig_proxy"] == "http://explicit.example:3128"
+    assert details["NO_PROXY"]["api_host_explicit"] is True
+    assert details["no_proxy"]["api_host_explicit"] is False
+    for sensitive in (
+        "api-user",
+        "api-password",
+        "api-token",
+        "kube-token",
+        "private-path",
+        "explicit-user",
+        "explicit-password",
+        "proxy-user",
+        "proxy-password",
+    ):
+        assert sensitive not in record.message
+
+
+@pytest.mark.parametrize("content", [None, "", "clusters: [invalid"])
+def test_failure_diagnostics_do_not_raise_for_invalid_kubeconfig(tmp_path, caplog, content):
+    if content is not None:
+        (tmp_path / "missing.yaml").write_text(content, encoding="utf-8")
+    runner = RestrictedKubectlRunner(tmp_path / "kubectl", "llmd-", kubeconfig=str(tmp_path / "missing.yaml"))
+
+    runner._log_failure(["kubectl", "get", "pods", "--namespace", "llmd-test"], 1, transport="cli", pid=123)
+
+    details = json.loads(caplog.records[-1].message.split(" ", 1)[1])
+    assert details["kubeconfig_error"] in {"ConfigException", "ValueError", "ParserError", "TypeError"}
+    assert details["returncode"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [0, 1, 124])
+async def test_sdk_failure_diagnostics_use_live_proxy_environment(tmp_path, monkeypatch, caplog, status):
+    from unittest.mock import AsyncMock
+
+    from llm_d_lens.deploy.runtime import composition
+    from llm_d_lens.infrastructure.kubernetes import commands
+    from llm_d_lens.infrastructure.process import CommandResult
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://snapshot.example:3128")
+    runner = RestrictedKubectlRunner(tmp_path / "kubectl", "llmd-", kubeconfig=str(tmp_path / "missing.yaml"))
+    monkeypatch.setenv("HTTPS_PROXY", "http://live.example:3128")
+    monkeypatch.setattr(commands, "sdk_enabled", lambda: True)
+    execute = AsyncMock(return_value=CommandResult(("kubectl",), status, "out", "err"))
+    monkeypatch.setattr(commands, "execute_sdk_command", execute)
+    spawn = AsyncMock()
+    monkeypatch.setattr(composition, "spawn", spawn)
+
+    result = await runner(["kubectl", "get", "pods", "--namespace", "llmd-test", "-o", "json"])
+
+    assert result == (status, "out", "err")
+    spawn.assert_not_awaited()
+    execute.assert_awaited_once()
+    records = [record for record in caplog.records if "deployment_kubernetes_command_failed" in record.message]
+    assert len(records) == (1 if status else 0)
+    if records:
+        details = json.loads(records[0].message.split(" ", 1)[1])
+        assert details["transport"] == "sdk"
+        assert details["HTTPS_PROXY"] == "http://live.example:3128"
 
 
 @pytest.mark.asyncio

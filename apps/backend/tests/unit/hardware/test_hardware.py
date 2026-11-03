@@ -89,6 +89,19 @@ def test_bundled_payloads_validate_against_schema():
         discovery.validate_profile_payload(payload)
 
 
+def test_node_memory_label_contract_round_trips():
+    profile = get_profile("nvidia")
+    expected = {
+        "per_device_label": "nvidia.com/gpu.memory",
+        "count_label": "nvidia.com/gpu.count",
+        "unit": "Mi",
+    }
+    assert profile.planning.node_memory == expected
+    assert profile.planning.to_dict()["node_memory"] == expected
+    assert HardwareProfile.from_dict(profile.to_dict()).planning.node_memory == expected
+    assert get_profile("intel-xpu").planning.node_memory == {}
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -96,6 +109,16 @@ def test_bundled_payloads_validate_against_schema():
         _payload(request_model="cuda"),
         {**_payload(), "unknown_field": 1},
         _payload(driver={"installer": "apt"}),
+        _payload(planning={"node_memory": {"per_device_label": "test.example/memory"}}),
+        _payload(
+            planning={
+                "node_memory": {
+                    "per_device_label": "test.example/memory",
+                    "count_label": "test.example/count",
+                    "unit": "unknown",
+                }
+            }
+        ),
     ],
 )
 def test_invalid_profile_payloads_are_rejected(payload):

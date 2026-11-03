@@ -106,9 +106,16 @@
   "planning": {
     "aic_system_patterns": ["h100|h200|b200|gb200|a100|l40|l4|nvidia"],
     "aic_system_models": [
-      { "pattern": "\\ba100\\b", "system": "a100_sxm" }
+      { "pattern": "\\ba100\\b", "system": "a100_sxm" },
+      { "pattern": "\\bh100\\b", "system": "h100_sxm" }
     ],
     "model_label_keys": ["nvidia.com/gpu.product", "nvidia.com/gpu.family"],
+    "model_family_names": ["ampere"],
+    "node_memory": {
+      "per_device_label": "nvidia.com/gpu.memory",
+      "count_label": "nvidia.com/gpu.count",
+      "unit": "Mi"
+    },
     "default_backend": "vllm",
     "device_class_allow_pattern": "^(gpu\\.nvidia\\.com|nvidia\\.com)",
     "discovery": {

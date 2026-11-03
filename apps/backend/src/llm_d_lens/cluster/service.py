@@ -1764,12 +1764,10 @@ def _build_node_gpu_list(
         if dev_vram_used is None:
             if vram_usage_percent is not None and dev_vram_total > 0:
                 dev_vram_used = int(dev_vram_total * (vram_usage_percent / 100.0))
-            else:
-                dev_vram_used = 0
         else:
             dev_vram_used = int(dev_vram_used)
 
-        dev_vram_usage_pct = _usage_percent(dev_vram_used, dev_vram_total) or 0.0
+        dev_vram_usage_pct = _usage_percent(dev_vram_used, dev_vram_total)
 
         read_bytes = dev_metrics.get("vramReadThroughputBytes")
         write_bytes = dev_metrics.get("vramWriteThroughputBytes")
@@ -1886,6 +1884,31 @@ def _active_gpu_device_keys(resource_claims: list[dict[str, Any]]) -> set[tuple[
     return allocated
 
 
+def _node_label_gpu_vram_bytes(node_name: str, labels: dict[str, Any], gpu_by_profile: dict[str, int]) -> int:
+    total = 0
+    for profile_id, gpu_count in gpu_by_profile.items():
+        settings = get_profile(profile_id).planning.node_memory
+        if not settings:
+            return 0
+        per_device = _int(labels.get(settings["per_device_label"]))
+        physical_count = _int(labels.get(settings["count_label"]))
+        if per_device <= 0 or physical_count <= 0:
+            logger.debug("Node %s profile %s has no valid device memory labels", node_name, profile_id)
+            return 0
+        if physical_count != gpu_count:
+            logger.warning(
+                "Node %s profile %s memory labels report %s devices but discovered capacity is %s; "
+                "label VRAM is unavailable",
+                node_name,
+                profile_id,
+                physical_count,
+                gpu_count,
+            )
+            return 0
+        total += _memory_bytes(f"{per_device}{settings['unit']}") * physical_count
+    return total
+
+
 def _node_summary(
     node: dict[str, Any],
     resource_slice_counts: dict[str, int] | None = None,
@@ -1943,6 +1966,7 @@ def _node_summary(
         "gpuCount": gpu_count,
         "gpuByProfile": gpu_by_profile,
         "gpuModelsByProfile": gpu_models_by_profile,
+        "vramBytes": _node_label_gpu_vram_bytes(name, labels, gpu_by_profile),
         "cachedImages": sorted(
             {
                 name
@@ -2173,6 +2197,9 @@ async def build_overview(cluster: registry.Cluster) -> dict[str, Any]:
     ]
     worker_node_names = {node["name"] for node in node_summaries}
     vram_by_node = _resource_slice_gpu_vram_by_node(resource_slices, worker_node_names)
+    for node in node_summaries:
+        if not vram_by_node.get(node["name"]):
+            vram_by_node[node["name"]] = node["vramBytes"]
     vram_bytes = sum(vram_by_node.values())
     top_nodes = (
         json_output(top_nodes_result, "kubectl node metrics").get("items") or []

@@ -3,8 +3,68 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
+from llm_d_lens.aic.models import AICExperimentResponse, AICSearchResponse, AICSupportResponse
 from llm_d_lens.api.main import app
 from llm_d_lens.simulation import candidate_search as candidates
+
+
+@pytest.mark.parametrize("supported", [True, False])
+def test_predictive_search_handles_aic_response_models(monkeypatch, supported):
+    monkeypatch.setattr(
+        candidates.aic_service,
+        "check_support",
+        AsyncMock(
+            return_value=AICSupportResponse(supported=supported, agg_supported=supported, disagg_supported=supported)
+        ),
+    )
+    search = AsyncMock(
+        return_value=AICSearchResponse(configs=[{"mode": "agg", "tp": 2, "replicas": 1, "ttft_ms": 100, "tpot_ms": 10}])
+    )
+    monkeypatch.setattr(candidates.aic_service, "search", search)
+    response = TestClient(app).post(
+        "/api/candidate-search",
+        json={
+            "sourceIds": ["aic"],
+            "workload": {"model": "example/model"},
+            "searchConfig": {"totalGpus": 3, "aicSystemName": "test-system"},
+        },
+    )
+    if not supported:
+        assert response.status_code == 400
+        assert "not supported" in response.json()["error"]
+        search.assert_not_awaited()
+        return
+    assert response.status_code == 200
+    candidate = response.json()["candidates"][0]
+    assert candidate["totalGpus"] == 2
+    assert candidate["predicted"] == {"ttftMs": 100, "tpotMs": 10, "throughputTps": None}
+    search.assert_awaited_once()
+
+
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+def test_manual_estimate_preserves_dictionary_response(monkeypatch, mode):
+    monkeypatch.setattr(
+        candidates.aic_service,
+        "check_support",
+        AsyncMock(return_value=AICSupportResponse(supported=True, agg_supported=True, disagg_supported=True)),
+    )
+    estimate = AsyncMock(return_value={"mode": mode, "tp": 1, "ttft_ms": 100, "tpot_ms": 10})
+    monkeypatch.setattr(candidates.aic_service, "estimate", estimate)
+    response = TestClient(app).post(
+        "/api/candidate-search",
+        json={
+            "sourceIds": ["manual"],
+            "workload": {"model": "example/model"},
+            "searchConfig": {"aicSystemName": "test-system"},
+            "manualConfig": {"servingMode": mode},
+        },
+    )
+    assert response.status_code == 200
+    candidate = response.json()["candidates"][0]
+    assert candidate["sourceLabel"] == "Manual Estimate"
+    assert candidate["topologyMode"] == mode
+    assert candidate["predicted"]["ttftMs"] == 100
+    estimate.assert_awaited_once()
 
 
 def test_grid_candidates_preserve_order_budget_and_names():
@@ -42,15 +102,19 @@ def test_relaxed_retries_no_feasible_and_rejects_over_budget(monkeypatch):
     search = AsyncMock(
         side_effect=[
             candidates.aic_service.AICError(candidates.NO_FEASIBLE),
-            {
-                "configs": [
+            AICSearchResponse(
+                configs=[
                     {"mode": "agg", "tp": 8, "replicas": 1, "ttft_ms": 100, "tpot_ms": 10},
                     {"mode": "agg", "tp": 2, "replicas": 2, "ttft_ms": 120, "tpot_ms": 10},
                 ]
-            },
+            ),
         ]
     )
-    monkeypatch.setattr(candidates.aic_service, "check_support", AsyncMock(return_value={"supported": True}))
+    monkeypatch.setattr(
+        candidates.aic_service,
+        "check_support",
+        AsyncMock(return_value=AICSupportResponse(supported=True, agg_supported=True, disagg_supported=True)),
+    )
     monkeypatch.setattr(candidates.aic_service, "search", search)
     response = TestClient(app).post(
         "/api/candidate-search/relaxed",
@@ -73,11 +137,11 @@ def test_manual_yaml_preserves_chosen_and_replica_inference(monkeypatch):
         candidates.aic_service,
         "experiments",
         AsyncMock(
-            return_value={
-                "experiments": [
+            return_value=AICExperimentResponse(
+                experiments=[
                     {"mode": "agg", "tp": 2, "pp": 2, "num_total_gpus": 8, "is_chosen": True, "name": "chosen config"},
                 ]
-            }
+            )
         ),
     )
     response = TestClient(app).post(
@@ -101,7 +165,8 @@ def test_unknown_sources_are_ignored():
 
 @pytest.mark.parametrize("field", ["concurrency", "request_rate"])
 def test_support_preserves_load_target_and_upstream_token_defaults(monkeypatch, field):
-    support = AsyncMock(return_value={"supported": True})
+    result = AICSupportResponse(supported=True, agg_supported=True, disagg_supported=True)
+    support = AsyncMock(return_value=result)
     monkeypatch.setattr(candidates.aic_service, "check_support", support)
     response = TestClient(app).post(
         "/api/candidate-support",
@@ -111,6 +176,7 @@ def test_support_preserves_load_target_and_upstream_token_defaults(monkeypatch, 
         },
     )
     assert response.status_code == 200
+    assert response.json() == result.model_dump(mode="json")
     payload = support.call_args.args[0]
     assert payload.mean_input_tokens == 4000
     assert payload.mean_output_tokens == 1000

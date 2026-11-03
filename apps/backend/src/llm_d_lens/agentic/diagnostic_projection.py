@@ -4,13 +4,52 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
-from .evidence_search_repository import DiagnosticEvidenceProjection, EvidenceSourceType
+from llm_d_lens.infrastructure.artifacts.store import resolve_artifact
+from llm_d_lens.infrastructure.storage.paths import storage_path
+
+from .evidence_search_repository import DiagnosticEvidenceChunk, DiagnosticEvidenceProjection, EvidenceSourceType
 
 _MAX_EXCERPT_CHARS = 8_000
 _REFERENCE_SOURCES = {"deployment_log", "profiling_trace", "artifact", "guide", "github", "paper"}
+
+
+class DiagnosticArtifactError(RuntimeError):
+    """A diagnostic artifact cannot be verified against its retained manifest."""
+
+
+def verify_artifact_evidence(
+    root: Path,
+    chunk: DiagnosticEvidenceChunk,
+    *,
+    approved_roots: Iterable[Path] | None = None,
+) -> Path:
+    """Resolve and checksum diagnostic artifacts independently of public search."""
+    if not all((chunk.artifact_uri, chunk.file_sha256, chunk.manifest_sha256)):
+        raise DiagnosticArtifactError("artifact evidence is missing immutable references")
+    root = Path(root).resolve()
+    approved_roots = approved_roots or (
+        storage_path("data", "artifacts"),
+        storage_path("data", "datasets"),
+    )
+    if not any(root.is_relative_to(Path(item).resolve()) for item in approved_roots):
+        raise DiagnosticArtifactError("artifact evidence root is not approved for retrieval")
+    try:
+        manifest_bytes = (root / "manifest.json").read_bytes()
+        manifest = json.loads(manifest_bytes)
+        if manifest.get("retention_class") not in {"evidence", "diagnostic"}:
+            raise ValueError("manifest retention class is not searchable evidence")
+        path = resolve_artifact(root, manifest, chunk.artifact_uri)
+        if hashlib.sha256(manifest_bytes).hexdigest() != chunk.manifest_sha256:
+            raise DiagnosticArtifactError("artifact manifest checksum does not match indexed evidence")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != chunk.file_sha256:
+            raise DiagnosticArtifactError("artifact checksum does not match indexed evidence")
+    except (OSError, ValueError) as error:
+        raise DiagnosticArtifactError("artifact evidence cannot be resolved from its manifest") from error
+    return path
 
 
 def project_diagnostic_excerpt(
@@ -57,7 +96,7 @@ def project_planning_snapshot(
     tenant_id: str,
     acl: tuple[str, ...],
 ) -> DiagnosticEvidenceProjection:
-    """Produce a metadata-only diagnostic projection from a batch-5 JSON snapshot."""
+    """Produce a metadata-only diagnostic projection from a planning audit snapshot."""
     raw = Path(path).read_bytes()
     try:
         snapshot = json.loads(raw)

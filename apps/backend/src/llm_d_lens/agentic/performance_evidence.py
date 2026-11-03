@@ -11,12 +11,7 @@ from .benchmark_evidence import (
     BenchmarkQuery,
     BenchmarkRecord,
     CandidateConfiguration,
-    HardwareDescriptor,
-    ModelDescriptor,
-    RuntimeFingerprint,
-)
-from .benchmark_evidence import (
-    WorkloadProfile as BenchmarkWorkloadProfile,
+    historical_query_context,
 )
 from .benchmark_store import JsonBenchmarkRecordStore
 from .planner import PerformanceScoreInput, PlannedCandidate, PlanningFacts, WeightedBenchmarkSample
@@ -42,42 +37,13 @@ class BenchmarkPerformanceEvidence:
         profile = facts.workload_profile
         if profile is None:
             return ()
-        model = ModelDescriptor(
-            model_id=model_name,
-            family=model_name.split("/")[0],
-            architecture="dense",
-            parameter_count_b=max(facts.model_weight_gib / 2, 0.1),
-            quantization="unknown",
-            tokenizer_id=model_name,
-        )
-        hardware = HardwareDescriptor(
-            accelerator="cluster",
-            vram_per_gpu_gib=facts.vram_per_gpu_gib,
-            gpu_count=max(facts.free_gpu_count, 1),
-        )
-        runtime = RuntimeFingerprint(
-            backend="vllm",
-            backend_version="unknown",
-            accelerator_runtime="unknown",
-        )
-        workload = BenchmarkWorkloadProfile(
-            mean_input_tokens=profile.mean_input_tokens or facts.context_length,
-            p95_input_tokens=profile.p95_input_tokens or profile.mean_input_tokens or facts.context_length,
-            mean_output_tokens=profile.mean_output_tokens or 256,
-            concurrency=profile.concurrency or 1,
-            request_rate=profile.request_rate or 1,
-            shared_prefix_ratio=profile.shared_prefix_ratio or 0,
-            prefill_fraction=1.0 if facts.prefill_heavy else 0.0,
-        )
+        context = historical_query_context(model_name, facts)
         score_inputs: list[PerformanceScoreInput] = []
         for candidate in candidates:
             if not candidate.deployable:
                 continue
             query = BenchmarkQuery(
-                model=model,
-                hardware=hardware,
-                runtime=runtime,
-                workload=workload,
+                **context,
                 ttft_slo_ms=facts.ttft_slo_ms,
                 tpot_slo_ms=facts.tpot_slo_ms,
                 candidate=CandidateConfiguration(
@@ -158,42 +124,13 @@ class BenchmarkPerformanceEvidence:
         profile = facts.workload_profile
         if profile is None:
             return {}
-        model = ModelDescriptor(
-            model_id=model_name,
-            family=model_name.split("/")[0],
-            architecture="dense",
-            parameter_count_b=max(facts.model_weight_gib / 2, 0.1),
-            quantization="unknown",
-            tokenizer_id=model_name,
-        )
-        hardware = HardwareDescriptor(
-            accelerator="cluster",
-            vram_per_gpu_gib=facts.vram_per_gpu_gib,
-            gpu_count=max(facts.free_gpu_count, 1),
-        )
-        runtime = RuntimeFingerprint(
-            backend="vllm",
-            backend_version="unknown",
-            accelerator_runtime="unknown",
-        )
-        workload = BenchmarkWorkloadProfile(
-            mean_input_tokens=profile.mean_input_tokens or facts.context_length,
-            p95_input_tokens=profile.p95_input_tokens or profile.mean_input_tokens or facts.context_length,
-            mean_output_tokens=profile.mean_output_tokens or 256,
-            concurrency=profile.concurrency or 1,
-            request_rate=profile.request_rate or 1,
-            shared_prefix_ratio=profile.shared_prefix_ratio or 0,
-            prefill_fraction=1.0 if facts.prefill_heavy else 0.0,
-        )
+        context = historical_query_context(model_name, facts)
         samples: dict[str, tuple[WeightedBenchmarkSample, ...]] = {}
         for candidate in candidates:
             if not candidate.deployable:
                 continue
             query = BenchmarkQuery(
-                model=model,
-                hardware=hardware,
-                runtime=runtime,
-                workload=workload,
+                **context,
                 ttft_slo_ms=facts.ttft_slo_ms,
                 tpot_slo_ms=facts.tpot_slo_ms,
                 candidate=CandidateConfiguration(

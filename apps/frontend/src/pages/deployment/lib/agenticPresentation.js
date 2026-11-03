@@ -1,5 +1,93 @@
 import { formatTimestamp } from '../../../shared/lib/formatTimestamp.js';
 
+export function retrievalBranchSummaries(run) {
+    const evidence = run?.planning_evidence || [];
+    const publicSql = evidence.find((item) => item.id === 'public-rag:query');
+    const cases = evidence.find((item) => item.source === 'configuration-cases')?.details;
+    const branches = cases?.branch_status;
+    const internal = branches?.internal_sql;
+    const retainedCases = cases?.cases || [];
+    const sourceCases = (internal) => retainedCases.filter((item) =>
+        internal ? item.origins?.includes('agentic:evaluate') : item.origins?.some((origin) => origin !== 'agentic:evaluate'));
+    const rows = [];
+    const diagnostic = (status, reason) => `${status.replaceAll('_', ' ')}${reason ? `: ${reason.replaceAll('_', ' ')}` : ''}.`;
+    if (publicSql || branches?.public_sql) {
+        const { retrieval = branches?.public_sql, response, code } = publicSql?.details || {};
+        rows.push({
+            id: 'public_sql',
+            label: 'Public SQL measured observations',
+            status: publicSql?.status || branches.public_sql.status,
+            evidence: publicSql,
+            cases: sourceCases(false),
+            summary: ['available', 'no_matches'].includes(publicSql?.status || branches.public_sql.status) && retrieval
+                ? `Retrieved ${retrieval.returned_observations ?? 'unknown'} of ${retrieval.matched_observations ?? 'unknown'} matching observations; ${response?.evidence?.length ?? sourceCases(false).reduce((count, item) => count + (item.measurements?.length ?? 0), 0)} retained for planning.`
+                : diagnostic(publicSql?.status || branches.public_sql.status, code),
+        });
+    }
+    if (internal) {
+        rows.push({
+            id: 'internal_sql',
+            label: 'Internal SQL experiments',
+            status: internal.status,
+            cases: sourceCases(true),
+            summary: ['available', 'empty'].includes(internal.status)
+                ? `Retrieved ${internal.returned_count ?? 'unknown'} of ${internal.candidate_total ?? 'unknown'} matching experiments; ${sourceCases(true).length} retained for planning.${internal.reason ? ` ${diagnostic(internal.reason)}` : ''}`
+                : diagnostic(internal.status, internal.reason),
+        });
+    }
+    for (const row of rows) {
+        const fallbackCount = row.cases?.filter((item) => item.ranking?.queue === 'fallback').length ?? 0;
+        if (fallbackCount) {
+            row.warning = `${fallbackCount} of ${row.cases.length} retained cases have neither comparable workload nor valid latency; these are fallback references, not low-latency evidence.`;
+        }
+    }
+    return rows;
+}
+
+export function planningEvidenceLabel(item, hasAicPrediction) {
+    if (item.id === 'public-rag:query' || item.source === 'configuration-cases') return null;
+    if (item.id === 'aic:support' && hasAicPrediction) return null;
+    if (item.id === 'aic:search') return 'AIC performance prediction';
+    if (item.id.startsWith('cluster-overview:')) return 'Live cluster capacity';
+    if (item.id === 'deploy-history') return 'Deployment history';
+    if (item.id === 'simulation-history') return 'Simulation history';
+    return item.source;
+}
+
+export function publicRagMatchSummary(match) {
+    if (!match) return [];
+    const lines = Object.entries(match.workload?.fields || {}).map(([name, field]) =>
+        `${name}: requested ${field.requested}, reported ${field.reported}, difference ${field.difference}; ${field.basis}.`);
+    if (match.workload?.unknown_fields?.length) {
+        lines.push(`Unknown workload fields: ${match.workload.unknown_fields.join(', ')}.`);
+    }
+    if (match.workload?.similarity !== null && match.workload?.similarity !== undefined) {
+        lines.push(`Workload similarity: ${Math.round(match.workload.similarity * 100)}%; coverage: ${Math.round(match.workload.coverage * 100)}%. Not performance confidence.`);
+    }
+    if (match.workload?.nominal_prompt_shape) {
+        lines.push(`Reported nominal prompt shape: ${JSON.stringify(match.workload.nominal_prompt_shape)}. Not a measured mean or P95.`);
+    }
+    if (match.ranking?.queue === 'fallback') {
+        lines.push('Fallback queue: neither comparable workload nor valid latency; configuration reference only, not low-latency evidence.');
+    }
+    if (match.latency) {
+        lines.push(`Published latency target status: ${match.latency.status.replaceAll('_', ' ')}. Not current deployment SLO compliance.`);
+        for (const [metric, field] of Object.entries(match.latency.fields || {})) {
+            for (const target of field.targets ?? [field]) {
+                const statistic = target.statistic ? ` ${target.statistic}` : '';
+                const operator = target.operator ? `${target.operator} ` : '';
+                lines.push(`${metric.toUpperCase()}${statistic} target ${operator}${target.target_ms} ms: ${target.observations.length
+                    ? target.observations.map((item) => `${item.value_ms} ms (${item.statistic || 'unspecified statistic'}; deviation ${(item.relative_deviation * 100).toFixed(1)}%)`).join('; ')
+                    : 'unknown'}.`);
+            }
+        }
+    }
+    if (match.configuration_basis) {
+        lines.push(`Configuration basis: ${JSON.stringify(match.configuration_basis)}.`);
+    }
+    return lines;
+}
+
 export function historicalEvidenceSummary(samples) {
     const history = Array.isArray(samples) ? samples : [];
     if (!history.length) return null;

@@ -59,12 +59,17 @@ Kubernetes 加速器资源识别硬件变体；容量和配置校验保持生效
 
 1. 打开模型，填写部署名称，选择集群和缓存存储。
 2. 将 **Mode** 改为 **Agentic**。
-3. 选择 **Use case（使用场景）**和 **GPU capacity for planning（规划可用 GPU）**，检查负载及性能目标。**Input tokens per request（ISL）**默认填入 `4000`，**Output tokens per request（OSL）**默认填入 `1000`，与 AIC 原生 search/recommend 默认值一致。**TTFT SLO (ms)** 默认填入 `2000`，**TPOT SLO (ms)** 默认填入 `30`，均可修改；不提供端到端延迟输入框。
+3. 选择 **Use case（使用场景）**和 **GPU capacity for planning（规划可用 GPU）**，检查负载及性能目标。**Mean input tokens per request（平均输入长度，ISL）**、**Mean output tokens per request（平均输出长度，OSL）**、**TTFT SLO (ms)** 和 **TPOT SLO (ms)** 初始为空。占位示例 `4000`、`1000`、`2000` 和 `30` 不会作为要求提交，也不会将平均输入长度复制成 P95；不提供端到端延迟输入框。在规划提示词中，TPOT 也支持每 token 单位：`TPOT <= 20 ms/token` 与 `TPOT <= 0.02 s/token` 均表示每 token 20 毫秒。
 4. **AI provider** 可保持 **Default (no external AI provider)（不使用外部 AI）**，也可选择已配置的提供方辅助排序。
 5. 可选：展开 **Preference（偏好）**，用英文填写，例如 `use fewer GPU resources`（少用 GPU）或 `prefer prefix cache`（优先前缀缓存）。
 6. 点击 **Generate recommendation（生成推荐）**。
 7. 在 **Validated alternatives（已验证的备选方案）**中展开 **Why this option（选择理由）**，比较资源用量和性能估算。
 8. 点击所选方案的 **Deploy recommendation（部署推荐方案）**，到**部署**页查看启动状态。
+
+Agentic 生成与重新计算推荐时跳过模型文件是否存在、下载是否就绪的检查，
+但仍需选择合法的已注册模型缓存存储卷。可以先规划、后下载模型；
+批准部署时才检查模型是否已在所选存储中就绪，并解析当前凭据策略。
+模型缺失或下载未完成会阻止部署，不再阻止生成推荐。Manual 和 Standard 部署检查保持不变。
 
 可选：生成推荐前展开 **Pod placement（Pod 放置）**，选择部署运行的位置。
 
@@ -79,6 +84,28 @@ Agentic 页面会明确显示原因和处理建议，不会悄悄回退为没有
 
 要调整推荐，在备选方案下方输入新的偏好，点击 **Recalculate selection（重新计算）**。
 不配置外部 AI 提供方也可以使用此操作。
+
+每次生成或重新计算推荐时，Lens 都会先按所选模型查询已发布的公开 SQL 实验，
+再进行 AIC 规划。配置外部 AI 提供方时，适用的公共实测证据在候选生成和排序中优先于
+AIC 估算；公共证据缺失或不适用时，AIC 作为补充。实时资源硬约束和明确的操作偏好仍然有效，
+不同硬件、负载、运行时版本、拓扑或指标统计口径的结果不能直接互换。
+
+公共检索还会按目标集群实时探测的加速卡型号过滤，而不是按集群名称判断。
+厂商修饰及分隔符差异可以匹配，但显存大小和 PCIe/SXM 型号仍严格区分。
+未知或混合硬件会明确提示；没有匹配结果时不会回退到其他硬件家族。
+
+公开基准记录的运行时后端缺失、为空或为 `unknown` 时，检索和规划上下文默认按 `vllm` 处理。
+明确标注的其他后端保持原值，不匹配 vLLM 计划。该资料库默认规则不会推断运行时版本，
+也不会改写原始证据。
+
+在 **Decision evidence（决策证据）** 中查看 **Public SQL measured observations**，
+可检查检索状态、原始数值与单位、来源路径、版本和校验和。无匹配、查询失败或缺少已认证的全局
+`benchmark-rag:query:read` 权限时，页面会明确提示，并继续使用原有证据规划。
+包含公共 RAG 观测数据的计划仍要求相同的读取权限。
+没有外部 AI 时，检索结果仅作为上下文保留，不会自动转换为确定性性能预测，也不会改写显示的 SLO 判断。
+
+内部 SQL 实验单独列出。Agentic 规划使用 SQL 证据，
+不要求安装文档搜索服务或独立搜索页。
 
 使用外部 AI 提供方时，生成和选择阶段的提示词都会将完整偏好放在规划上下文之前。
 在平台与硬件有效性约束内，单卡、不做 P/D 分离等明确要求优先于候选多样性和性能建议。

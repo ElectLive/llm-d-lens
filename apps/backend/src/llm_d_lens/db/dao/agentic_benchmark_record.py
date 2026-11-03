@@ -15,6 +15,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from llm_d_lens.agentic.benchmark_evidence import BenchmarkRecord
+from llm_d_lens.agentic.planning_requirements import normalize_hardware
 from llm_d_lens.db.dao.base import BaseDao
 from llm_d_lens.db.models.agentic_benchmark_record import BenchmarkRecordRow
 
@@ -103,9 +104,11 @@ class BenchmarkRecordDao(BaseDao):
         """
         if any(value is None for value in (accelerator, backend, quantization, minimum_vram_per_gpu_gib)):
             return []
+        accelerator_key = normalize_hardware(accelerator).device_model
+        if accelerator_key is None:
+            return []
         with self._read_only() as session:
             stmt = select(BenchmarkRecordRow).where(
-                BenchmarkRecordRow.hardware_accelerator == accelerator,
                 BenchmarkRecordRow.runtime_backend == backend,
                 BenchmarkRecordRow.model_quantization == quantization,
                 BenchmarkRecordRow.configuration_topology == topology,
@@ -114,7 +117,9 @@ class BenchmarkRecordDao(BaseDao):
             if observed_after is not None:
                 stmt = stmt.where(BenchmarkRecordRow.timestamp >= observed_after)
             stmt = stmt.order_by(BenchmarkRecordRow.timestamp, BenchmarkRecordRow.benchmark_id)
-            return [row.to_dto() for row in session.scalars(stmt)]
+            # Stored labels retain source provenance, including older normalized labels.
+            records = (row.to_dto() for row in session.scalars(stmt))
+            return [record for record in records if record.hardware.accelerator_key == accelerator_key]
 
     def find_seed_candidates(
         self,
@@ -133,9 +138,11 @@ class BenchmarkRecordDao(BaseDao):
         """
         if any(value is None for value in (accelerator, backend, quantization, minimum_vram_per_gpu_gib)):
             return []
+        accelerator_key = normalize_hardware(accelerator).device_model
+        if accelerator_key is None:
+            return []
         with self._read_only() as session:
             stmt = select(BenchmarkRecordRow).where(
-                BenchmarkRecordRow.hardware_accelerator == accelerator,
                 BenchmarkRecordRow.runtime_backend == backend,
                 BenchmarkRecordRow.model_quantization == quantization,
                 BenchmarkRecordRow.hardware_vram_per_gpu_gib >= minimum_vram_per_gpu_gib,
@@ -143,4 +150,5 @@ class BenchmarkRecordDao(BaseDao):
             if observed_after is not None:
                 stmt = stmt.where(BenchmarkRecordRow.timestamp >= observed_after)
             stmt = stmt.order_by(BenchmarkRecordRow.timestamp, BenchmarkRecordRow.benchmark_id)
-            return [row.to_dto() for row in session.scalars(stmt)]
+            records = (row.to_dto() for row in session.scalars(stmt))
+            return [record for record in records if record.hardware.accelerator_key == accelerator_key]

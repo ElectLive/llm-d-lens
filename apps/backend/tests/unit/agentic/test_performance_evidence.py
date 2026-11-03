@@ -24,6 +24,21 @@ from llm_d_lens.agentic.planner import (
     PlanningFacts,
     WorkloadProfile,
 )
+from llm_d_lens.agentic.planning_requirements import (
+    HardwareIdentity,
+    ModelIdentity,
+    PlanningRequirements,
+    RuntimeIdentity,
+    normalize_requirements,
+)
+
+
+def _requirements():
+    return PlanningRequirements(
+        hardware=HardwareIdentity(device_model="Gaudi3", memory_gib=96, form_factor="OAM", device_count=2),
+        model=ModelIdentity(model_id="Qwen/Qwen3-8B", architecture="dense", quantization="bf16"),
+        runtime=RuntimeIdentity(backend="vllm", backend_version="0.8.5", accelerator_runtime="1.20"),
+    )
 
 
 def test_benchmark_performance_evidence_maps_matching_records_to_candidate_inputs(tmp_path):
@@ -31,6 +46,7 @@ def test_benchmark_performance_evidence_maps_matching_records_to_candidate_input
         model_weight_gib=16,
         vram_per_gpu_gib=96,
         free_gpu_count=2,
+        requirements=_requirements(),
         workload_profile=WorkloadProfile(
             mean_input_tokens=4096,
             p95_input_tokens=8192,
@@ -52,11 +68,11 @@ def test_benchmark_performance_evidence_maps_matching_records_to_candidate_input
             family="Qwen",
             architecture="dense",
             parameter_count_b=8,
-            quantization="unknown",
+            quantization="bf16",
             tokenizer_id="Qwen/Qwen3-8B",
         ),
-        hardware=HardwareDescriptor(accelerator="cluster", vram_per_gpu_gib=96, gpu_count=2),
-        runtime=RuntimeFingerprint(backend="vllm", backend_version="unknown", accelerator_runtime="unknown"),
+        hardware=HardwareDescriptor(accelerator="Gaudi3", vram_per_gpu_gib=96, gpu_count=2, form_factor="OAM"),
+        runtime=RuntimeFingerprint(backend="vllm", backend_version="0.8.5", accelerator_runtime="1.20"),
         workload=BenchmarkWorkloadProfile(
             mean_input_tokens=4096,
             p95_input_tokens=8192,
@@ -81,11 +97,11 @@ def test_benchmark_performance_evidence_maps_matching_records_to_candidate_input
     assert len(evidence) == 1
     assert evidence[0].candidate_id == candidate.id
     assert evidence[0].status == "interpolated"
-    assert evidence[0].ttft_p95_ms == 300
+    assert evidence[0].ttft_p95_ms == pytest.approx(300)
     assert evidence[0].evidence_refs == ("benchmark:bench-1",)
     sample = evidence[0].weighted_samples[0]
     assert sample.benchmark_id == "bench-1"
-    assert sample.match_confidence == pytest.approx(0.9, abs=0.001)
+    assert sample.match_confidence == pytest.approx(0.897142857, abs=0.001)
     assert sample.ttft_p95_ms == 300
     assert sample.outcome == "succeeded"
     assert sample.topology == "optimized-baseline"
@@ -96,7 +112,15 @@ def test_benchmark_performance_evidence_blocks_repeated_matching_failures(tmp_pa
         model_weight_gib=16,
         vram_per_gpu_gib=96,
         free_gpu_count=2,
-        workload_profile=WorkloadProfile(mean_input_tokens=4096),
+        requirements=_requirements(),
+        workload_profile=WorkloadProfile(
+            mean_input_tokens=4096,
+            p95_input_tokens=4096,
+            mean_output_tokens=256,
+            concurrency=1,
+            request_rate=1,
+            shared_prefix_ratio=0,
+        ),
     )
     candidate = next(
         item for item in DeterministicPlanner().candidates(facts) if item.id == "optimized-baseline-tp1-r1"
@@ -109,11 +133,11 @@ def test_benchmark_performance_evidence_blocks_repeated_matching_failures(tmp_pa
             family="Qwen",
             architecture="dense",
             parameter_count_b=8,
-            quantization="unknown",
+            quantization="bf16",
             tokenizer_id="Qwen/Qwen3-8B",
         ),
-        "hardware": HardwareDescriptor(accelerator="cluster", vram_per_gpu_gib=96, gpu_count=2),
-        "runtime": RuntimeFingerprint(backend="vllm", backend_version="unknown", accelerator_runtime="unknown"),
+        "hardware": HardwareDescriptor(accelerator="Gaudi3", vram_per_gpu_gib=96, gpu_count=2, form_factor="OAM"),
+        "runtime": RuntimeFingerprint(backend="vllm", backend_version="0.8.5", accelerator_runtime="1.20"),
         "workload": BenchmarkWorkloadProfile(
             mean_input_tokens=4096,
             p95_input_tokens=4096,
@@ -144,6 +168,7 @@ def test_persisted_benchmark_history_flows_to_planner_and_ai_context(tmp_path):
         model_weight_gib=16,
         vram_per_gpu_gib=96,
         free_gpu_count=2,
+        requirements=_requirements(),
         ttft_slo_ms=500,
         tpot_slo_ms=50,
         workload_profile=WorkloadProfile(
@@ -167,11 +192,11 @@ def test_persisted_benchmark_history_flows_to_planner_and_ai_context(tmp_path):
             family="Qwen",
             architecture="dense",
             parameter_count_b=8,
-            quantization="unknown",
+            quantization="bf16",
             tokenizer_id="Qwen/Qwen3-8B",
         ),
-        "hardware": HardwareDescriptor(accelerator="cluster", vram_per_gpu_gib=96, gpu_count=2),
-        "runtime": RuntimeFingerprint(backend="vllm", backend_version="unknown", accelerator_runtime="unknown"),
+        "hardware": HardwareDescriptor(accelerator="Gaudi3", vram_per_gpu_gib=96, gpu_count=2, form_factor="OAM"),
+        "runtime": RuntimeFingerprint(backend="vllm", backend_version="0.8.5", accelerator_runtime="1.20"),
         "workload": BenchmarkWorkloadProfile(
             mean_input_tokens=4096,
             p95_input_tokens=8192,
@@ -240,7 +265,7 @@ def test_persisted_benchmark_history_flows_to_planner_and_ai_context(tmp_path):
     baseline_evidence = inputs_by_candidate[baseline.id]
     pd_evidence = inputs_by_candidate[pd.id]
 
-    assert baseline_evidence.status == "measured"
+    assert baseline_evidence.status == "interpolated"
     assert baseline_evidence.ttft_p95_ms == pytest.approx(300)
     assert baseline_evidence.tpot_p95_ms == pytest.approx(25)
     assert baseline_evidence.throughput_tokens_per_s == pytest.approx(700)
@@ -251,7 +276,17 @@ def test_persisted_benchmark_history_flows_to_planner_and_ai_context(tmp_path):
     assert pd_evidence.has_blocking_negative_evidence
     assert pd_evidence.evidence_refs == tuple(f"benchmark:pd-failure-{index}" for index in range(3))
 
-    facts_with_evidence = replace(facts, performance_score_inputs=score_inputs)
+    facts_with_evidence = replace(
+        facts,
+        performance_score_inputs=score_inputs,
+        requirements=facts.requirements.model_copy(
+            update={
+                "performance_targets": normalize_requirements(
+                    "TTFT P95 <= 500 ms; TPOT P95 <= 50 ms"
+                ).performance_targets
+            }
+        ),
+    )
     candidates_with_evidence = deterministic_planner.candidates(facts_with_evidence)
     decision = deterministic_planner.decide(facts_with_evidence, candidates_with_evidence)
     assert decision.candidate_id == baseline.id
@@ -272,9 +307,13 @@ def test_persisted_benchmark_history_flows_to_planner_and_ai_context(tmp_path):
         baseline_with_evidence,
     )
     assert "benchmark_evidence" not in ai_context
-    assert [sample["benchmark_id"] for sample in ai_context["historical_benchmarks"]] == [
-        f"baseline-success-{index}" for index in range(3)
+    assert len(ai_context["historical_benchmarks"]) == 3
+    assert all("benchmark_id" not in sample for sample in ai_context["historical_benchmarks"])
+    assert ai_context["historical_benchmarks"] == [
+        {key: value for key, value in sample.items() if key != "benchmark_id"}
+        for sample in baseline_with_evidence.historical_benchmarks
     ]
     assert all(
-        sample["match_confidence"] == pytest.approx(0.9, abs=0.001) for sample in ai_context["historical_benchmarks"]
+        sample["match_confidence"] == pytest.approx(0.897142857, abs=0.001)
+        for sample in ai_context["historical_benchmarks"]
     )

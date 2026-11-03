@@ -91,6 +91,14 @@ def _download_snapshot(repo: RepoName, ref: str) -> Path:
         return destination
 
 
+def download_snapshot(repo: RepoName, ref: str) -> Path:
+    """Fetch a source snapshot synchronously using the shared managed cache."""
+    ref = ref.strip()
+    if not ref or ref.startswith("-"):
+        raise ValueError("A nonempty Git ref is required")
+    return _download_snapshot(repo, ref)
+
+
 @dataclass
 class DownloadStatus:
     repo: RepoName
@@ -126,9 +134,7 @@ async def ensure_downloaded(cluster_id: str, repo: RepoName, ref: str) -> Path:
     ref = ref.strip()
     _set_status(cluster_id, repo, ref=ref, state="downloading", path=None, error=None)
     try:
-        if not ref or ref.startswith("-"):
-            raise ValueError("A nonempty Git ref is required")
-        dest = await asyncio.to_thread(_download_snapshot, repo, ref)
+        dest = await asyncio.to_thread(download_snapshot, repo, ref)
     except Exception as error:
         logger.exception("event=repo_download_failed repo=%s ref=%s cluster_id=%s", repo, ref, cluster_id)
         _set_status(cluster_id, repo, ref=ref, state="failed", path=None, error=str(error))

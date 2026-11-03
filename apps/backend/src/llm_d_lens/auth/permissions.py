@@ -118,6 +118,8 @@ _PERMISSIONS: tuple[Permission, ...] = (
     _permission("evaluate:run:cancel", "Cancel evaluations"),
     _permission("evaluate:run:retry", "Retry evaluations"),
     _permission("evaluate:run:delete", "Delete evaluations"),
+    # public benchmark corpus (global grants only)
+    _permission("benchmark-rag:query:read", "Query public benchmark evidence", READ),
     # configuration
     _permission("configuration:artifact:read", "View configuration artifacts", READ),
     _permission("configuration:artifact:save", "Save configuration artifacts"),
@@ -252,6 +254,7 @@ _MAINTAINER_DENIED = _permissions_named(
     "system:secret:read",
     "system:secret:manage",
     "model-service:group:manage",
+    "benchmark-rag:query:read",
 )
 
 #: end-user is a model-service *consumer* only (product decision D15 in

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Iterable
 from pathlib import Path
@@ -10,10 +9,13 @@ from typing import Any
 
 import httpx
 
-from llm_d_lens.infrastructure.artifacts.store import resolve_artifact
-from llm_d_lens.infrastructure.storage.paths import storage_path
-
-from .diagnostic_projection import projection_index_document
+from .diagnostic_projection import (
+    DiagnosticArtifactError,
+    projection_index_document,
+)
+from .diagnostic_projection import (
+    verify_artifact_evidence as verify_diagnostic_artifact,
+)
 from .evidence_search_repository import (
     DiagnosticEvidenceChunk,
     DiagnosticEvidenceProjection,
@@ -189,27 +191,8 @@ def verify_artifact_evidence(
     *,
     approved_roots: Iterable[Path] | None = None,
 ) -> Path:
-    """Resolve and checksum a locally indexed artifact before Agentic uses it."""
-    if not all((chunk.artifact_uri, chunk.file_sha256, chunk.manifest_sha256)):
-        raise EvidenceSearchError("artifact evidence is missing immutable references")
-    root = Path(root).resolve()
-    approved_roots = approved_roots or (
-        storage_path("data", "artifacts"),
-        storage_path("data", "datasets"),
-    )
-    if not any(root.is_relative_to(Path(item).resolve()) for item in approved_roots):
-        raise EvidenceSearchError("artifact evidence root is not approved for retrieval")
-    manifest_path = root / "manifest.json"
+    """Keep the adapter's error contract while sharing diagnostic verification."""
     try:
-        manifest_bytes = manifest_path.read_bytes()
-        manifest = json.loads(manifest_bytes)
-        if manifest.get("retention_class") not in {"evidence", "diagnostic"}:
-            raise ValueError("manifest retention class is not searchable evidence")
-        path = resolve_artifact(root, manifest, chunk.artifact_uri)
-    except (OSError, ValueError, json.JSONDecodeError) as error:
-        raise EvidenceSearchError("artifact evidence cannot be resolved from its manifest") from error
-    if hashlib.sha256(manifest_bytes).hexdigest() != chunk.manifest_sha256:
-        raise EvidenceSearchError("artifact manifest checksum does not match indexed evidence")
-    if hashlib.sha256(path.read_bytes()).hexdigest() != chunk.file_sha256:
-        raise EvidenceSearchError("artifact checksum does not match indexed evidence")
-    return path
+        return verify_diagnostic_artifact(root, chunk, approved_roots=approved_roots)
+    except DiagnosticArtifactError as error:
+        raise EvidenceSearchError(str(error)) from error

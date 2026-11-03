@@ -4,9 +4,20 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from math import exp, log
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from llm_d_lens.agentic.public_benchmark_record.contracts import model_identities_match
+
+from .planning_requirements import normalize_hardware
+
+if TYPE_CHECKING:
+    from .planner import PlanningFacts
+
+
+def _known(value: str | None) -> bool:
+    return bool(value and value.lower() not in {"unknown", "unavailable", "cluster", "none"})
 
 
 class ModelDescriptor(BaseModel):
@@ -33,16 +44,40 @@ class HardwareDescriptor(BaseModel):
     accelerator: str | None = None
     vram_per_gpu_gib: float | None = Field(default=None, gt=0)
     gpu_count: int | None = Field(default=None, ge=1)
+    profile_id: str | None = None
+    form_factor: str | None = None
+    interconnect: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_identity(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        result = dict(value)
+        identity = normalize_hardware(result.get("accelerator"), device_count=result.get("gpu_count"))
+        for field, parsed in (
+            ("gpu_count", identity.device_count),
+            ("vram_per_gpu_gib", identity.memory_gib),
+            ("form_factor", identity.form_factor),
+            ("profile_id", identity.profile_id),
+        ):
+            if result.get(field) is None:
+                result[field] = parsed
+        return result
+
+    @property
+    def accelerator_key(self) -> str | None:
+        return normalize_hardware(self.accelerator).device_model
 
 
 class WorkloadProfile(BaseModel):
-    mean_input_tokens: float = Field(gt=0)
-    p95_input_tokens: float = Field(gt=0)
-    mean_output_tokens: float = Field(gt=0)
-    concurrency: float = Field(gt=0)
-    request_rate: float = Field(gt=0)
+    mean_input_tokens: float | None = Field(default=None, gt=0)
+    p95_input_tokens: float | None = Field(default=None, gt=0)
+    mean_output_tokens: float | None = Field(default=None, gt=0)
+    concurrency: float | None = Field(default=None, gt=0)
+    request_rate: float | None = Field(default=None, gt=0)
     shared_prefix_ratio: float | None = Field(default=None, ge=0, le=1)
-    prefill_fraction: float = Field(ge=0, le=1)
+    prefill_fraction: float | None = Field(default=None, ge=0, le=1)
 
 
 class CandidateConfiguration(BaseModel):
@@ -75,6 +110,24 @@ class BenchmarkRecord(BaseModel):
     failure_reason: str | None = None
     provenance: dict[str, object] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def preserve_hardware_identity(self) -> BenchmarkRecord:
+        # The existing SQL schema stores these variant fields in provenance.
+        stored = self.provenance.get("hardware_identity")
+        extra_fields = ("profile_id", "form_factor", "interconnect")
+        if isinstance(stored, dict):
+            updates = {
+                field: stored[field]
+                for field in extra_fields
+                if self.hardware.model_dump()[field] is None and stored.get(field) is not None
+            }
+            if updates:
+                self.hardware = HardwareDescriptor.model_validate({**self.hardware.model_dump(), **updates})
+        identity = {field: getattr(self.hardware, field) for field in extra_fields}
+        if any(value is not None for value in identity.values()):
+            self.provenance = {**self.provenance, "hardware_identity": identity}
+        return self
+
 
 class BenchmarkQuery(BaseModel):
     model: ModelDescriptor
@@ -84,6 +137,51 @@ class BenchmarkQuery(BaseModel):
     candidate: CandidateConfiguration
     ttft_slo_ms: float | None = Field(default=None, gt=0)
     tpot_slo_ms: float | None = Field(default=None, gt=0)
+
+
+def historical_query_context(model_name: str, facts: PlanningFacts) -> dict[str, object]:
+    """Share real identity and explicit workload across both historical consumers."""
+    requirements = facts.requirements
+    if requirements is not None:
+        requirements.require_valid()
+    identity = requirements.hardware if requirements else normalize_hardware(None)
+    model = requirements.model if requirements else None
+    runtime = requirements.runtime if requirements else None
+    profile = facts.workload_profile
+    if isinstance(profile, dict):
+        workload_values = profile
+    else:
+        workload_values = {
+            field: getattr(profile, field, None)
+            for field in (
+                "mean_input_tokens",
+                "p95_input_tokens",
+                "mean_output_tokens",
+                "concurrency",
+                "request_rate",
+                "shared_prefix_ratio",
+            )
+        }
+    return {
+        "model": ModelDescriptor(
+            model_id=model.model_id if model and model.model_id else model_name,
+            revision=model.revision if model else None,
+            architecture=model.architecture if model else None,
+            quantization=model.quantization if model else None,
+        ),
+        "hardware": HardwareDescriptor(
+            accelerator=identity.device_model,
+            profile_id=identity.profile_id,
+            form_factor=identity.form_factor,
+            interconnect=identity.interconnect,
+            vram_per_gpu_gib=identity.memory_gib,
+            gpu_count=identity.device_count,
+        ),
+        "runtime": RuntimeFingerprint(**runtime.model_dump()) if runtime else RuntimeFingerprint(),
+        "workload": WorkloadProfile(
+            **{key: value for key, value in workload_values.items() if key in WorkloadProfile.model_fields}
+        ),
+    }
 
 
 class WeightedBenchmark(BaseModel):
@@ -131,7 +229,15 @@ class BenchmarkEvidenceRetriever:
         )
         if not matches:
             status: Literal["measured", "interpolated", "estimated", "unknown"] = "unknown"
-        elif effective_sample_size + self._threshold_tolerance >= self.min_effective_samples and not negative_evidence:
+        elif (
+            effective_sample_size + self._threshold_tolerance >= self.min_effective_samples
+            and not negative_evidence
+            and all(
+                match.similarity >= 1 - self._threshold_tolerance
+                and match.runtime_similarity >= 1 - self._threshold_tolerance
+                for _, match in successful
+            )
+        ):
             status = "measured"
         else:
             status = "interpolated"
@@ -204,7 +310,7 @@ class BenchmarkEvidenceRetriever:
 
     @staticmethod
     def model_similarity(record: ModelDescriptor, query: ModelDescriptor) -> float:
-        if record.quantization is None or record.quantization != query.quantization:
+        if not _known(record.quantization) or record.quantization != query.quantization:
             return 0.0
         if record.architecture and query.architecture and record.architecture != query.architecture:
             return 0.0
@@ -222,13 +328,13 @@ class BenchmarkEvidenceRetriever:
                 query.tokenizer_id,
             )
         ):
-            return 0.8 if record.model_id == query.model_id else 0.0
+            return 0.8 if model_identities_match(record.model_id, query.model_id) else 0.0
         parameter_score = exp(-0.8 * abs(log(parameter_record / parameter_query)))
         similarity = (
             0.45 * (1.0 if record.family == query.family else 0.15)
             + 0.25
             + 0.20 * parameter_score
-            + 0.10 * (1.0 if record.tokenizer_id == query.tokenizer_id else 0.5)
+            + 0.10 * (1.0 if model_identities_match(record.tokenizer_id, query.tokenizer_id) else 0.5)
         )
         return round(min(1.0, similarity), 12)
 
@@ -244,7 +350,7 @@ class BenchmarkEvidenceRetriever:
             version and version.lower() not in ("unknown", "unavailable")
             for version in (record.backend_version, query.backend_version)
         ):
-            backend_score = 0.9
+            backend_score = 0.6
         elif record_version[0] != query_version[0]:
             backend_score = 0.2
         elif record_version[1] != query_version[1]:
@@ -254,7 +360,7 @@ class BenchmarkEvidenceRetriever:
         else:
             backend_score = 1.0
         accelerator_score = (
-            0.9
+            0.6
             if not all(
                 version and version.lower() not in ("unknown", "unavailable")
                 for version in (record.accelerator_runtime, query.accelerator_runtime)
@@ -279,21 +385,24 @@ class BenchmarkEvidenceRetriever:
         if (
             isinstance(enrichment, dict)
             and not enrichment.get("serving_revision_pinned")
-            and record.model.model_id != query.model.model_id
+            and not model_identities_match(record.model.model_id, query.model.model_id)
         ):
             return False
         return (
-            record.hardware.accelerator is not None
-            and record.runtime.backend is not None
-            and record.model.quantization is not None
+            _known(record.hardware.accelerator_key)
+            and _known(record.runtime.backend)
+            and _known(record.model.quantization)
             and record.hardware.vram_per_gpu_gib is not None
             and query.hardware.vram_per_gpu_gib is not None
             and record.hardware.gpu_count is not None
             and query.hardware.gpu_count is not None
-            and record.hardware.accelerator == query.hardware.accelerator
+            and record.hardware.accelerator_key == query.hardware.accelerator_key
+            and record.hardware.form_factor == query.hardware.form_factor
+            and record.hardware.profile_id == query.hardware.profile_id
+            and record.hardware.interconnect == query.hardware.interconnect
             and record.runtime.backend == query.runtime.backend
             and record.model.quantization == query.model.quantization
-            and record.hardware.vram_per_gpu_gib >= query.hardware.vram_per_gpu_gib
+            and record.hardware.vram_per_gpu_gib == query.hardware.vram_per_gpu_gib
             and record.configuration.topology == query.candidate.topology
         )
 
@@ -301,20 +410,27 @@ class BenchmarkEvidenceRetriever:
     def hardware_similarity(record: HardwareDescriptor, query: HardwareDescriptor) -> float:
         if record.gpu_count is None or query.gpu_count is None:
             return 0.0
-        return 0.7 + 0.3 * exp(-abs(log(record.gpu_count / query.gpu_count)))
+        identity_score = 1.0 if record.form_factor and query.form_factor else 0.7
+        return identity_score * (0.7 + 0.3 * exp(-abs(log(record.gpu_count / query.gpu_count))))
 
     @staticmethod
     def workload_similarity(record: WorkloadProfile, query: WorkloadProfile) -> float:
         ratio_scores = [
-            exp(-abs(log(record.mean_input_tokens / query.mean_input_tokens))),
-            exp(-abs(log(record.p95_input_tokens / query.p95_input_tokens))),
-            exp(-abs(log(record.mean_output_tokens / query.mean_output_tokens))),
-            exp(-abs(log(record.concurrency / query.concurrency))),
-            exp(-abs(log(record.request_rate / query.request_rate))),
+            exp(-abs(log(actual / requested))) if actual is not None and requested is not None else 0.0
+            for actual, requested in (
+                (record.mean_input_tokens, query.mean_input_tokens),
+                (record.p95_input_tokens, query.p95_input_tokens),
+                (record.mean_output_tokens, query.mean_output_tokens),
+                (record.concurrency, query.concurrency),
+                (record.request_rate, query.request_rate),
+            )
+        ] + [
             1 - abs(record.shared_prefix_ratio - query.shared_prefix_ratio)
             if record.shared_prefix_ratio is not None and query.shared_prefix_ratio is not None
             else 0.0,
-            1 - abs(record.prefill_fraction - query.prefill_fraction),
+            1 - abs(record.prefill_fraction - query.prefill_fraction)
+            if record.prefill_fraction is not None and query.prefill_fraction is not None
+            else 0.0,
         ]
         return sum(ratio_scores) / len(ratio_scores)
 
@@ -326,11 +442,22 @@ class BenchmarkEvidenceRetriever:
             if not optimization_union
             else len(set(record.optimizations) & set(query.optimizations)) / len(optimization_union)
         )
-        return (
-            0.4 * exp(-abs(log(record.decode_tp / query.decode_tp)))
-            + 0.4 * exp(-abs(log(record.decode_replicas / query.decode_replicas)))
-            + 0.2 * optimization_score
-        )
+        dimensions: list[tuple[int | None, int | None]] = [
+            (record.decode_tp, query.decode_tp),
+            (record.decode_replicas, query.decode_replicas),
+        ]
+        if query.topology == "pd-disaggregation":
+            dimensions.extend(
+                [
+                    (record.prefill_tp, query.prefill_tp),
+                    (record.prefill_replicas, query.prefill_replicas),
+                ]
+            )
+        topology_score = sum(
+            exp(-abs(log(actual / requested))) if actual is not None and requested is not None else 0.0
+            for actual, requested in dimensions
+        ) / len(dimensions)
+        return 0.8 * topology_score + 0.2 * optimization_score
 
     @staticmethod
     def _aggregate_metrics(matches: list[tuple[BenchmarkRecord, WeightedBenchmark]]) -> BenchmarkMetrics:

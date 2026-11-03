@@ -835,6 +835,18 @@ Get or create the active Lens session metadata for a cluster id. Use this when a
 
 Return a live Kubernetes overview for one cluster, including node, GPU, namespace, cached-image, and component-health summaries. Accelerator models come from node product labels and DRA ResourceSlice device attributes when present. The route also reports the current cluster record alongside the live snapshot.
 
+VRAM capacity prefers Prometheus telemetry, then DRA ResourceSlice capacity.
+When neither provides capacity, registered profiles can read per-device memory
+and device-count labels from worker nodes. The NVIDIA profile uses GFD
+`nvidia.com/gpu.memory` (MiB) and `nvidia.com/gpu.count`; the count must match
+discovered capacity, so shared replicas do not inflate physical memory.
+This fallback supplies static total capacity only, not current usage or free
+VRAM. Device `vramUsedBytes` and `vramUsagePercent` remain `null` without usage
+telemetry; the UI displays unknown usage rather than zero. Missing or invalid
+labels leave capacity unknown; model names are not used to guess memory.
+Profiles declare label names and units in
+`planning.node_memory`; profiles without that declaration do not use this fallback.
+
 <Tabs>
   <TabItem value="rest-api" label="REST API">
     **`GET /api/cluster/overview`**

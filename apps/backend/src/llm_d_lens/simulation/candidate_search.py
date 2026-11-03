@@ -12,7 +12,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from llm_d_lens.aic import service as aic_service
 from llm_d_lens.aic.models import AICEstimateRequest, AICExperimentRequest, AICRequest
@@ -93,7 +93,8 @@ async def aic_call(request: Request, operation: str, payload: dict) -> dict:
         parsed = model.model_validate(payload)
         timeout = float(os.environ.get("AIC_REQUEST_TIMEOUT_MS", "240000")) / 1000
         async with asyncio.timeout(timeout):
-            return await service(parsed)
+            result = await service(parsed)
+            return result.model_dump(mode="json") if isinstance(result, BaseModel) else result
     except ValidationError as error:
         detail = "; ".join(f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}" for item in error.errors())
         raise CandidateError(detail, 422) from error
