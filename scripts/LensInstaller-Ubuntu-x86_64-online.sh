@@ -1164,12 +1164,21 @@ cmd_start() {
     resolve_ports
     persist_ports
     ensure_tls
+    # When the installed backend serves HTTPS with its self-signed certificate,
+    # the Istio Gateway must originate unverified TLS to the lens-authz hop;
+    # without it every Gateway request fails closed with 503. Mirrors
+    # hack/lens-local.sh; an explicit environment value wins.
+    local authz_tls_insecure="${LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE:-}"
+    if [[ -z "$authz_tls_insecure" ]]; then
+        if [[ "$ENABLE_HTTPS" == "1" ]]; then authz_tls_insecure=1; else authz_tls_insecure=0; fi
+    fi
     regenerate_mcp_tools
     local scheme="http"
     [[ "$ENABLE_HTTPS" == "1" ]] && scheme="https"
     start_one app env NODE_ENV=production BACKEND_HOST="$APP_HOST" BACKEND_PORT="$APP_PORT" \
         PRISM_MCP_URL="$scheme://127.0.0.1:$APP_PORT/api/mcp" \
         PRISM_MCP_CA_FILE="${TLS_CERT_FILE:-}" \
+        LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE="$authz_tls_insecure" \
         TLS_CERT_FILE="$TLS_CERT_FILE" TLS_KEY_FILE="$TLS_KEY_FILE" \
         bash hack/run-backend.sh
     log "waiting for services to become ready..."

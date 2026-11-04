@@ -78,6 +78,54 @@ printf '%s\\n' "$PRISM_MCP_URL" "$PRISM_MCP_CA_FILE" "$@"
   assert.equal(failed.stdout, '');
 });
 
+test('installed controller mirrors HTTPS into the Gateway authz TLS override', t => {
+  const cases = [
+    ['HTTPS with an existing certificate', { https: 1, cert: true }, {}, '1'],
+    ['plain HTTP', { https: 0, cert: false }, {}, '0'],
+    ['explicit env wins over HTTPS', { https: 1, cert: true }, { LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE: '0' }, '0'],
+    ['explicit env wins over plain HTTP', { https: 0, cert: false }, { LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE: '1' }, '1'],
+    ['HTTPS downgraded when no certificate host is detectable', { https: 1, cert: false }, {}, '0'],
+  ];
+  for (const [name, install, env, expected] of cases) {
+    const { root, put } = setup(t);
+    execFileSync('bash', ['-c', 'source "$1"; INSTALL_DIR="$2"; write_control_script',
+      'test', resolve('scripts/LensInstaller-Ubuntu-x86_64-online.sh'), root]);
+    execFileSync('bash', ['-n', join(root, 'lensctl.sh')]);
+    const marker = join(root, 'gateway-authz-tls-insecure');
+    let tls = '';
+    if (install.cert) {
+      put('certs/tls.crt', 'certificate');
+      put('certs/tls.key', 'key');
+      tls = `TLS_CERT_FILE=${join(root, 'certs/tls.crt')}\nTLS_KEY_FILE=${join(root, 'certs/tls.key')}\n`;
+    }
+    put('.lens-install.env', `APP_PORT=49191\nBACKEND_PORT=49191\nENABLE_HTTPS=${install.https}\n${tls}`);
+    put('.venv/bin/python', '#!/usr/bin/env bash\nexit 0\n');
+    chmodSync(join(root, '.venv/bin/python'), 0o755);
+    put('hack/run-backend.sh', '#!/usr/bin/env bash\nprintf \'%s\\n\' "${LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE:-<unset>}" > "$LENS_TEST_MARKER"\nexit 0\n');
+    for (const [tool, body] of [
+      ['ss', '#!/usr/bin/env bash\nexit 0\n'],
+      ['hostname', '#!/usr/bin/env bash\nexit 0\n'],
+      ['sleep', '#!/usr/bin/env bash\nexit 0\n'],
+      ['curl', '#!/usr/bin/env bash\nfor i in $(seq 1 100); do [[ -s "$LENS_TEST_MARKER" ]] && exit 0; /bin/sleep 0.05; done\nexit 1\n'],
+    ]) {
+      put(`bin/${tool}`, body);
+      chmodSync(join(root, `bin/${tool}`), 0o755);
+    }
+    const result = spawnSync('bash', [join(root, 'lensctl.sh'), 'start'], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`,
+        LENS_TEST_MARKER: marker, LENS_DATA_DIR: join(root, 'data'),
+        LENS_CACHE_DIR: join(root, 'cache'), LENS_LOG_DIR: join(root, 'logs'),
+        LENS_SCRATCH_DIR: join(root, 'scratch'),
+        LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE: undefined,
+        TLS_CERT_FILE: '', TLS_KEY_FILE: '', APP_HOST: undefined, LENS_IN_PLACE: undefined,
+        ...env },
+    });
+    assert.equal(result.status, 0, `${name}: ${result.stdout}${result.stderr}`);
+    assert.equal(readFileSync(marker, 'utf8').trim(), expected, name);
+  }
+});
+
 function setup(t) {
   const root = mkdtempSync(join(tmpdir(), 'reuse-dev-start-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
