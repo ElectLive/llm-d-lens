@@ -6,7 +6,7 @@
 #
 #     https://www.apache.org/licenses/LICENSE-2.0
 
-"""HTTP contracts for the in-process AIConfigurator adapter."""
+"""HTTP contracts for the in-process AISimulate adapter."""
 
 from typing import Any, Literal, Self
 
@@ -34,8 +34,9 @@ class AICRequest(BaseModel):
     def validate_load_target(self) -> Self:
         if self.target_concurrency is not None and self.target_request_rate is not None:
             raise ValueError(
-                "AIC accepts only one load target: Concurrent requests or Request rate (QPS). "
-                "Both were provided; choose one and clear the other because AIC does not support joint load targets."
+                "AISimulate accepts only one load target: Concurrent requests or Request rate (QPS). "
+                "Both were provided; choose one and clear the other because AISimulate does not "
+                "support joint load targets."
             )
         return self
 

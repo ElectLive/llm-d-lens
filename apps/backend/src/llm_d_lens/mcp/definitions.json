@@ -1322,7 +1322,7 @@
     },
     {
       "name": "check_candidate_support",
-      "description": "Check whether AIConfigurator supports a workload on the requested hardware profile. This calls Lens's local candidate-support wrapper rather than the raw backend endpoint.",
+      "description": "Check whether AISimulate supports a workload on the requested hardware profile. This calls Lens's local candidate-support wrapper rather than the raw backend endpoint.",
       "riskTier": "write",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1373,7 +1373,7 @@
               "model"
             ],
             "additionalProperties": {},
-            "description": "Workload description used to check AIConfigurator support."
+            "description": "Workload description used to check AISimulate support."
           },
           "searchConfig": {
             "type": "object",
@@ -1385,23 +1385,23 @@
                 "maximum": 64
               },
               "aicSystemName": {
-                "description": "AIConfigurator system name, such as b60.",
+                "description": "AISimulate system name, such as b60.",
                 "type": "string",
                 "minLength": 1
               },
               "aicBackendName": {
-                "description": "AIConfigurator backend name, such as vllm.",
+                "description": "AISimulate backend name, such as vllm.",
                 "type": "string",
                 "minLength": 1
               },
               "aicDatabaseMode": {
-                "description": "AIConfigurator database mode, such as SILICON.",
+                "description": "AISimulate database mode, such as SILICON.",
                 "type": "string",
                 "minLength": 1
               }
             },
             "additionalProperties": {},
-            "description": "Hardware and search settings for the AIConfigurator support check."
+            "description": "Hardware and search settings for the AISimulate support check."
           }
         },
         "required": [
@@ -1463,7 +1463,7 @@
               "model"
             ],
             "additionalProperties": {},
-            "description": "Workload description used to check AIConfigurator support."
+            "description": "Workload description used to check AISimulate support."
           },
           "searchConfig": {
             "type": "object",
@@ -1481,17 +1481,17 @@
                 "maximum": 50
               },
               "aicSystemName": {
-                "description": "AIConfigurator system name, such as b60.",
+                "description": "AISimulate system name, such as b60.",
                 "type": "string",
                 "minLength": 1
               },
               "aicBackendName": {
-                "description": "AIConfigurator backend name, such as vllm.",
+                "description": "AISimulate backend name, such as vllm.",
                 "type": "string",
                 "minLength": 1
               },
               "aicDatabaseMode": {
-                "description": "AIConfigurator database mode, such as SILICON.",
+                "description": "AISimulate database mode, such as SILICON.",
                 "type": "string",
                 "minLength": 1
               }
@@ -1521,7 +1521,7 @@
             "type": "object",
             "properties": {
               "inputMode": {
-                "description": "Whether the manual candidate comes from structured form fields or an AIConfigurator YAML file.",
+                "description": "Whether the manual candidate comes from structured form fields or an AISimulate legacy YAML file.",
                 "type": "string",
                 "enum": [
                   "form",
@@ -1529,7 +1529,7 @@
                 ]
               },
               "yamlText": {
-                "description": "AIConfigurator experiment YAML text when inputMode is yaml.",
+                "description": "AISimulate legacy experiment YAML text when inputMode is yaml.",
                 "type": "string"
               },
               "name": {
@@ -1537,7 +1537,7 @@
                 "type": "string"
               },
               "servingMode": {
-                "description": "Manual serving mode for AIConfigurator estimate requests.",
+                "description": "Manual serving mode for AISimulate estimate requests.",
                 "type": "string",
                 "enum": [
                   "agg",
@@ -1732,7 +1732,7 @@
               "model"
             ],
             "additionalProperties": {},
-            "description": "Workload description used to check AIConfigurator support."
+            "description": "Workload description used to check AISimulate support."
           },
           "searchConfig": {
             "type": "object",
@@ -1750,17 +1750,17 @@
                 "maximum": 50
               },
               "aicSystemName": {
-                "description": "AIConfigurator system name, such as b60.",
+                "description": "AISimulate system name, such as b60.",
                 "type": "string",
                 "minLength": 1
               },
               "aicBackendName": {
-                "description": "AIConfigurator backend name, such as vllm.",
+                "description": "AISimulate backend name, such as vllm.",
                 "type": "string",
                 "minLength": 1
               },
               "aicDatabaseMode": {
-                "description": "AIConfigurator database mode, such as SILICON.",
+                "description": "AISimulate database mode, such as SILICON.",
                 "type": "string",
                 "minLength": 1
               }

@@ -1,4 +1,4 @@
-"""Compatibility API for candidate search, backed by the local AIC service."""
+"""Compatibility API for candidate search, backed by the local AISimulate service."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ router = APIRouter(include_in_schema=False)
 logger = logging.getLogger(__name__)
 SEARCH_SOURCES = {"baseline", "pd", "epd", "tiered-cache", "precise-prefix-cache"}
 SOURCE_LABELS = {
-    "aic": "AIC Prediction",
+    "aic": "AISimulate Prediction",
     "baseline": "Optimized Baseline",
     "pd": "P/D Disaggregation",
     "epd": "E/P/D Disaggregation",
@@ -101,7 +101,7 @@ async def aic_call(request: Request, operation: str, payload: dict) -> dict:
     except aic_service.AICError as error:
         if str(error) == NO_FEASIBLE:
             raise CandidateError(NO_FEASIBLE) from error
-        logger.exception("AIC candidate search failed")
+        logger.exception("AISimulate candidate search failed")
         raise CandidateError("AIC candidate search failed") from error
     except TimeoutError as error:
         raise CandidateError("AIC candidate search timed out", 504) from error
@@ -114,7 +114,7 @@ def candidate_base(source: str, config_id: str, index: int) -> dict:
         "sourceLabel": SOURCE_LABELS.get(source, source),
         "family": "Predictive" if source == "aic" else "Search-based",
         "confidence": None,
-        "backend": "AIConfigurator",
+        "backend": "AISimulate",
     }
 
 
@@ -141,7 +141,7 @@ def normalize_candidate(raw: dict, index: int, label: str | None = None) -> dict
         **candidate_base(
             "manual" if label else "aic", re.sub(r"[^a-zA-Z0-9_.-]+", "-", raw_name) if label else config_id, index
         ),
-        "name": raw_name if label else f"AIC #{index + 1} \u00b7 {config_id}",
+        "name": raw_name if label else f"AISimulate #{index + 1} \u00b7 {config_id}",
         "topologyMode": mode,
         "prefillTp": prefill_tp,
         "prefillReplicas": prefill_replicas,
@@ -234,7 +234,7 @@ async def search_candidates(request: Request, body: dict) -> dict:
     candidates = []
     if "aic" in sources:
         if not payload["aic_system_name"]:
-            raise CandidateError("AIC system is required for Predictive search")
+            raise CandidateError("AISimulate system is required for Predictive search")
         support = await aic_call(request, "support", payload)
         if support.get("supported") is False:
             raise CandidateError(
@@ -249,7 +249,7 @@ async def search_candidates(request: Request, body: dict) -> dict:
         if manual.get("inputMode") == "yaml":
             text = str(manual.get("yamlText") or "").strip()
             if not text:
-                raise CandidateError("Upload an AIConfigurator experiment YAML file first")
+                raise CandidateError("Upload an AISimulate legacy experiment YAML file first")
             result = await aic_call(request, "experiments", {"yaml_text": text, "top_n": limit})
             candidates.extend(
                 normalize_candidate(raw, index, "YAML Experiment")
@@ -257,7 +257,7 @@ async def search_candidates(request: Request, body: dict) -> dict:
             )
         else:
             if not payload["aic_system_name"]:
-                raise CandidateError("AIC system is required for Manual Estimate")
+                raise CandidateError("AISimulate system is required for Manual Estimate")
             mode = str(manual.get("servingMode") or "disagg")
             manual_payload = dict(payload, scenario="inference_scheduling" if mode == "agg" else "pd_disaggregation")
             for key, field in (
@@ -399,9 +399,9 @@ async def relaxed_candidates(request: Request, body: dict) -> dict:
 async def support_candidate(request: Request, body: dict) -> dict:
     payload = predict_payload(record(body.get("workload")), record(body.get("searchConfig")))
     if not payload["model_name"]:
-        raise CandidateError("Model is required for the AIC support check")
+        raise CandidateError("Model is required for the AISimulate support check")
     if not payload["aic_system_name"]:
-        raise CandidateError("AIC system is required for the support check")
+        raise CandidateError("AISimulate system is required for the support check")
     return await aic_call(request, "support", payload)
 
 

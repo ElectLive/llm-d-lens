@@ -6,7 +6,7 @@
 #
 #     https://www.apache.org/licenses/LICENSE-2.0
 
-"""Local AIConfigurator integration for Prism."""
+"""Local AISimulate integration through the AIC-compatible API for Prism."""
 
 from .router import router
 from .service import check_support

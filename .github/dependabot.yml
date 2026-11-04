@@ -21,14 +21,14 @@ updates:
     commit-message:
       prefix: "deps(docker)"
 
-  # Propose reviewed AIC upgrades while keeping the runtime version pinned.
+  # Propose reviewed AISimulate upgrades while keeping the runtime version pinned.
   - package-ecosystem: "pip"
-    directory: "/"
+    directory: "/apps/backend"
     schedule:
       interval: "weekly"
     allow:
-      - dependency-name: "aiconfigurator"
+      - dependency-name: "aisimulate"
     labels:
       - "dependencies"
     commit-message:
-      prefix: "deps(aic)"
+      prefix: "deps(aisimulate)"

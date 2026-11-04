@@ -6,9 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "llm-d-lens"
 version = "0.1.0"
 description = "Python backend for llm-d Lens"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
-    "aiconfigurator==0.12.0",
+    "aisimulate==0.13.0",
     "aiohttp>=3.9",
     "alembic>=1.13",
     "argon2-cffi>=23",

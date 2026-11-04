@@ -381,28 +381,29 @@ the returned top three are scored; no reason is inferred for candidates outside 
 Planning-fact collection matches discovered accelerator models against registered hardware profiles
 to select one AIC system. Unknown, ambiguous, or mixed systems leave AIC evidence unavailable.
 
-AIC support checks and estimates use the SDK release pinned in `pyproject.toml`
-(currently 0.12.0), including its bundled support matrix and performance data.
-An unsupported P/D result describes that installed matrix, not a hardware-level
-prohibition. The 0.12.0 matrix passes Qwen/Qwen3-0.6B on B60/vLLM for P/D;
-candidate availability still depends on the requested workload and GPU budget.
-After changing the dependency pin, reinstall project dependencies and restart
-the backend so support checks and searches use the same SDK release.
+AISimulate support checks and estimates use the release pinned in
+`pyproject.toml` (currently 0.13.0), including its bundled support matrix and
+performance data. The existing `/api/v1/aic` routes and request fields remain
+for compatibility. An unsupported P/D result describes the installed matrix,
+not a hardware-level prohibition; candidate availability also depends on the
+requested workload and GPU budget. After changing the dependency pin, reinstall
+project dependencies and restart the backend so support checks and searches use
+the same SDK release.
 
-### Search or size an AIC workload
+### Search or size an AISimulate workload
 
 The MCP generation and plain-estimate fallback behavior above applies when no load
-target is supplied. Agentic load-target planning instead validates the exact native
-AIC recommendations, including replica counts outside the ordinary candidate grid.
+target is supplied. Agentic load-target planning instead validates the exact
+AISimulate recommendations, including replica counts outside the ordinary candidate grid.
 
 <Tabs>
   <TabItem value="rest-api" label="REST API">
     **`POST /api/v1/aic/search`**
 
     `mean_input_tokens` defaults to `4000` and `mean_output_tokens` to `1000`, matching
-    native AIC search/recommend. Supply either positive `target_concurrency` or
+    the AISimulate compatibility API's search/recommend defaults. Supply either positive `target_concurrency` or
     `target_request_rate` (requests/second), or omit both for fixed-GPU search.
-    Supplying both is rejected with an explanation that AIC does not support joint
+    Supplying both is rejected with an explanation that this AISimulate API does not support joint
     load targets. Agentic maps `planning_facts.workload_profile.concurrency` and
     `.request_rate` to these fields; QPS and request rate are the same quantity.
 

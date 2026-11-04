@@ -8,6 +8,52 @@ from llm_d_lens.api.main import app
 from llm_d_lens.simulation import candidate_search as candidates
 
 
+def test_aic_candidate_search_serializes_service_models(monkeypatch):
+    support = AsyncMock(
+        return_value=AICSupportResponse(
+            supported=True,
+            agg_supported=True,
+            disagg_supported=True,
+        )
+    )
+    search = AsyncMock(
+        return_value=AICSearchResponse(
+            configs=[
+                {
+                    "mode": "agg",
+                    "tp": 2,
+                    "replicas": 2,
+                    "num_total_gpus": 4,
+                    "ttft_ms": 120,
+                    "tpot_ms": 10,
+                    "throughput_tokens_per_sec": 150,
+                }
+            ],
+            chosen_mode="agg",
+        )
+    )
+    monkeypatch.setattr(candidates, "require_route_permission", AsyncMock())
+    monkeypatch.setattr(candidates.aic_service, "check_support", support)
+    monkeypatch.setattr(candidates.aic_service, "search", search)
+
+    response = TestClient(app).post(
+        "/api/candidate-search",
+        json={
+            "sourceIds": ["aic"],
+            "workload": {"model": "Qwen/Qwen3-0.6B"},
+            "searchConfig": {"totalGpus": 4, "aicSystemName": "b60"},
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()["candidates"][0]
+    assert result["backend"] == "AISimulate"
+    assert result["topologyMode"] == "agg"
+    assert result["totalGpus"] == 4
+    support.assert_awaited_once()
+    search.assert_awaited_once()
+
+
 @pytest.mark.parametrize("supported", [True, False])
 def test_predictive_search_handles_aic_response_models(monkeypatch, supported):
     monkeypatch.setattr(

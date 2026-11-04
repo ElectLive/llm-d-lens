@@ -6,7 +6,7 @@
 #
 #     https://www.apache.org/licenses/LICENSE-2.0
 
-"""Local HTTP API backed by the pip-installed AIConfigurator SDK."""
+"""Local HTTP API backed by AISimulate's legacy AIC-compatible API."""
 
 from fastapi import APIRouter, HTTPException
 
@@ -22,9 +22,9 @@ def _bad_request(error: AICError) -> HTTPException:
 
 @router.post(
     "/support",
-    summary="Check AIConfigurator support for a model and hardware target.",
+    summary="Check AISimulate support for a model and hardware target.",
     description=(
-        "Check whether AIConfigurator supports the requested model, system, backend, and database mode. Returns "
+        "Check whether AISimulate supports the requested model, system, backend, and database mode. Returns "
         "supported serving modes, constraints, and a reason when unsupported. Use this before candidate search."
     ),
     operation_id="check_aic_support",
@@ -38,7 +38,7 @@ async def support_endpoint(request: AICRequest):
 
 @router.post(
     "/search",
-    summary="Search AIConfigurator for serving configuration candidates.",
+    summary="Search AISimulate for serving configuration candidates.",
     description=(
         "Search for serving configurations using the requested model, hardware target, workload token lengths, and "
         "latency targets. Returns candidate configurations and the chosen serving mode, subject to max_candidates."
@@ -54,8 +54,12 @@ async def search_endpoint(request: AICRequest):
 
 @router.post(
     "/experiments",
-    summary=("Parse an AIConfigurator experiment YAML file and return the top experiments Lens can extract from it."),
-    description="Parse an AIConfigurator experiment YAML file and return the top experiments Lens can extract from it.",
+    summary=(
+        "Parse an AISimulate legacy experiment YAML file and return the top experiments Lens can extract from it."
+    ),
+    description=(
+        "Parse an AISimulate legacy experiment YAML file and return the top experiments Lens can extract from it."
+    ),
     operation_id="list_aic_experiments",
 )
 async def experiments_endpoint(request: AICExperimentRequest):
@@ -67,7 +71,7 @@ async def experiments_endpoint(request: AICExperimentRequest):
 
 @router.post(
     "/estimate",
-    summary="Estimate one exact AIConfigurator serving topology.",
+    summary="Estimate one exact AISimulate serving topology.",
     description=(
         "Estimate TTFT and TPOT for an aggregated or P/D topology with explicit tensor parallelism, replicas and "
         "total GPU count. Reject results that do not match the requested topology."
