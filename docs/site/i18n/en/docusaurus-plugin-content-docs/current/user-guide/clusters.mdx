@@ -412,7 +412,8 @@ check() {
   local verb="$1" resource="$2"
   shift 2
   # A CRD that is not installed cannot be authorized; skip it here and let the
-  # wildcard group rule cover it once the chart/installer creates the CRD.
+  # wildcard group rule cover it once Lens installs the CRD or the chart/installer
+  # creates it.
   if [[ "$resource" == *.* && "$SERVED_RESOURCES" != *" $resource "* ]]; then
     printf '  SKIP: %-18s %-50s (CRD/API not installed)\n' "$verb" "$resource"
     return 0
@@ -681,7 +682,7 @@ info "  clusterrole: ${CLUSTER_ROLE}"
 4. On **Network Proxy**, keep **Auto-detect this cluster's proxy (recommended)**. To supply a proxy, choose **Custom proxy for this cluster** and fill in the proxy fields.
 5. On **Model gateway**, keep **Provider** on **Istio** and check the addresses using the table below.
 6. On **Accelerator**, select the accelerator types installed in the cluster and their driver access modes.
-7. On **llm-d stack**, review the listed versions and click **Next**. Wait for source downloads, image preparation, Gateway CRDs and the LeaderWorkerSet (LWS) controller installation to finish.
+7. On **llm-d stack**, review the listed versions and click **Next**. Wait for source downloads, image preparation, Gateway and llm-d router CRDs and the LeaderWorkerSet (LWS) controller installation to finish.
 8. On **Model Cache**, keep the suggested secret namespace/name and paste a **HuggingFace token** from your [Hugging Face settings](https://huggingface.co/settings/tokens). A model-cache storage volume is required: choose **hostPath** or **NFS** and fill in its path and capacity. You can also opt to prewarm a model now.
 9. Click **Review**, check the summary, then click **Finish**.
 10. Wait for the operations to finish and click **Done**. Select the cluster in the list and check **Workers** and **Deployable GPU**.
@@ -696,6 +697,13 @@ info "  clusterrole: ${CLUSTER_ROLE}"
 The wizard installs software and prepares images on cluster nodes. Run it against
 a cluster you are authorized to manage. A failed preparation step must be corrected
 before completing the wizard.
+
+Cluster prerequisites include the pinned llm-d router CRDs
+(`inferencemodelrewrites.llm-d.ai`). Lens installs them before any new router
+deployment starts. The cluster's CRDs action also restarts Lens-managed router
+EPPs whose pod template lacks the marker for the current CRD revision, so they
+re-register the `InferenceModelRewrite` API. On first use after upgrading, this
+restarts every published EPP once.
 
 ## Bootstrap a new cluster via Kubespray
 

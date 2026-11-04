@@ -10,13 +10,16 @@ from llm_d_lens.deploy.providers.guide_adapter import GuideDefinition, GuideDepl
 from llm_d_lens.deploy.providers.guide_catalog import GuideCatalog
 from llm_d_lens.deploy.service import ExecutionLogArchive, GuideAdapterDeploymentService
 from tests.unit.deploy.providers.test_storage_mount import cached_model as cached_model
-from tests.unit.deploy.test_bundle_evidence import EvidenceAdapter
+from tests.unit.deploy.test_bundle_evidence import EvidenceAdapter, _router_crds_ready
 from tests.unit.deploy.test_readiness_transient import startup_snapshot
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("deploy_fails", [False, True])
-async def test_refresh_during_creation_does_not_fail_missing_resources(tmp_path, deploy_fails, cached_model):
+async def test_refresh_during_creation_does_not_fail_missing_resources(
+    tmp_path, deploy_fails, cached_model, monkeypatch
+):
+    _router_crds_ready(monkeypatch)
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -244,7 +247,8 @@ async def test_resource_wait_recovery_clears_case_failure_and_marks_run_running(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("starting", [False, True])
-async def test_creation_keeps_resource_wait_or_startup_without_cleanup(tmp_path, cached_model, starting):
+async def test_creation_keeps_resource_wait_or_startup_without_cleanup(tmp_path, cached_model, starting, monkeypatch):
+    _router_crds_ready(monkeypatch)
     adapter = EvidenceAdapter()
     adapter.readiness = AsyncMock(return_value=ValidationResult(False, ["deployment exceeded progress deadline"]))
     adapter.diagnostics = AsyncMock(
@@ -279,3 +283,98 @@ async def test_creation_keeps_resource_wait_or_startup_without_cleanup(tmp_path,
     assert refreshed.status == DeploymentStatus.READY
     assert refreshed.endpoint.url == "http://router:8000"
     adapter.cleanup.assert_not_awaited()
+
+
+def _router_request(provider_ref: str) -> DeploymentCreateRequest:
+    return DeploymentCreateRequest(
+        provenance={"cluster_server_id": "cluster"},
+        configuration_artifacts=[
+            ConfigurationArtifact(
+                schema_version="v1",
+                kind="helm-values",
+                provider_ref=provider_ref,
+                media_type="application/json",
+                checksum="hash",
+                content='{"model":{"name":"org/model"},"runtime":{"storageVolumeId":"volume"}}',
+            )
+        ],
+    )
+
+
+class _ContractAdapter(EvidenceAdapter):
+    def __init__(self, provider_ref: str, deployment_contract: dict | None = None) -> None:
+        self._provider_ref = provider_ref
+        self._deployment_contract = deployment_contract or {}
+
+    def discover(self):
+        return GuideDefinition(self._provider_ref, "saved", "hash", "stable")
+
+    async def render(self, *_):
+        return GuideDeploymentArtifact(self._provider_ref, "hash", deployment_contract=dict(self._deployment_contract))
+
+
+@pytest.mark.asyncio
+async def test_router_provider_installs_crds_before_deploy(tmp_path, cached_model, monkeypatch):
+    order: list[tuple[str, str]] = []
+
+    async def ensure(cluster_id):
+        order.append(("crds", cluster_id))
+        return {"ok": True, "applied": True, "message": ""}
+
+    monkeypatch.setattr("llm_d_lens.deploy.service.ensure_router_crds", AsyncMock(side_effect=ensure))
+
+    class OrderedAdapter(EvidenceAdapter):
+        async def deploy(self, artifact, context):
+            order.append(("deploy", context["namespace"]))
+            return await super().deploy(artifact, context)
+
+    service = GuideAdapterDeploymentService(
+        GuideCatalog([OrderedAdapter()]), lambda _: "ns", ExecutionLogArchive(tmp_path)
+    )
+
+    execution = await service.create(_router_request("optimized-baseline"))
+
+    assert execution.status == DeploymentStatus.READY
+    assert [step[0] for step in order] == ["crds", "deploy"]
+    assert order[0][1] == "cluster"
+
+
+@pytest.mark.asyncio
+async def test_direct_data_plane_skips_the_router_crd_preflight(tmp_path, cached_model, monkeypatch):
+    ensure = AsyncMock(return_value={"ok": True, "applied": False, "message": "already present"})
+    monkeypatch.setattr("llm_d_lens.deploy.service.ensure_router_crds", ensure)
+    adapter = _ContractAdapter("baseline-vllm", {"data_plane_kind": "direct"})
+    service = GuideAdapterDeploymentService(GuideCatalog([adapter]), lambda _: "ns", ExecutionLogArchive(tmp_path))
+
+    execution = await service.create(_router_request("baseline-vllm"))
+
+    assert execution.status == DeploymentStatus.READY
+    ensure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_router_crd_preflight_failure_stops_the_deployment_before_deploy(tmp_path, cached_model, monkeypatch):
+    ensure = AsyncMock(return_value={"ok": False, "applied": True, "message": "apply failed"})
+    monkeypatch.setattr("llm_d_lens.deploy.service.ensure_router_crds", ensure)
+    adapter = EvidenceAdapter()
+    adapter.deploy = AsyncMock()
+    service = GuideAdapterDeploymentService(GuideCatalog([adapter]), lambda _: "ns", ExecutionLogArchive(tmp_path))
+
+    execution = await service.create(_router_request("optimized-baseline"))
+
+    assert execution.status == DeploymentStatus.FAILED
+    adapter.deploy.assert_not_awaited()
+    assert "apply failed" in execution.diagnostics.value["reason"]
+
+
+@pytest.mark.asyncio
+async def test_saved_bundle_router_version_skips_the_crd_preflight(tmp_path, cached_model, monkeypatch):
+    ensure = AsyncMock(return_value={"ok": True, "applied": True, "message": ""})
+    monkeypatch.setattr("llm_d_lens.deploy.service.ensure_router_crds", ensure)
+    adapter = _ContractAdapter("optimized-baseline", {"deploymentBundle": {"helm": {"version": "v0.9.0"}}})
+    service = GuideAdapterDeploymentService(GuideCatalog([adapter]), lambda _: "ns", ExecutionLogArchive(tmp_path))
+
+    execution = await service.create(_router_request("optimized-baseline"))
+
+    assert execution.status == DeploymentStatus.READY
+    ensure.assert_not_awaited()

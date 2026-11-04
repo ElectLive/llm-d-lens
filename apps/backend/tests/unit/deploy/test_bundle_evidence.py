@@ -12,6 +12,15 @@ from llm_d_lens.deploy.service import ExecutionLogArchive, GuideAdapterDeploymen
 from tests.unit.deploy.providers.test_storage_mount import cached_model as cached_model
 
 
+def _router_crds_ready(monkeypatch) -> None:
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "llm_d_lens.deploy.service.ensure_router_crds",
+        AsyncMock(return_value={"ok": True, "applied": False, "message": "already present"}),
+    )
+
+
 class EvidenceAdapter:
     def discover(self):
         return GuideDefinition("optimized-baseline", "saved", "hash", "stable")
@@ -40,7 +49,10 @@ class EvidenceAdapter:
 
 
 @pytest.mark.asyncio
-async def test_installed_router_evidence_survives_ready_execution_serialization_and_restore(tmp_path, cached_model):
+async def test_installed_router_evidence_survives_ready_execution_serialization_and_restore(
+    tmp_path, cached_model, monkeypatch
+):
+    _router_crds_ready(monkeypatch)
     catalog = GuideCatalog([EvidenceAdapter()])
     service = GuideAdapterDeploymentService(catalog, lambda _: "ns", ExecutionLogArchive(tmp_path))
     request = DeploymentCreateRequest(
@@ -68,7 +80,9 @@ async def test_installed_router_evidence_survives_ready_execution_serialization_
 
 
 @pytest.mark.asyncio
-async def test_refresh_captures_calibration_changes_and_restores_them(tmp_path, cached_model):
+async def test_refresh_captures_calibration_changes_and_restores_them(tmp_path, cached_model, monkeypatch):
+    _router_crds_ready(monkeypatch)
+
     class CalibratingAdapter(EvidenceAdapter):
         async def readiness(self, execution):
             execution.setdefault("calibrated_peak_prefill_throughput", 2500)

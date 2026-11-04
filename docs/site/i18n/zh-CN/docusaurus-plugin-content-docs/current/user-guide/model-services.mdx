@@ -50,6 +50,11 @@ description: 发布部署、创建 API 密钥并调用模型。
 `InferenceModelRewrite`。共享 Gateway 在请求到达模型服务器前用它改写请求体中的
 `model` 字段，因此客户端使用公开模型名，模型引擎仍保留自己的模型名。
 
+公开别名需要 llm-d router CRD（`inferencemodelrewrites.llm-d.ai`）。Lens 会在
+router 部署启动前安装它们。执行集群的 CRDs 操作时，Lens 还会重启 pod 模板中缺少当前
+CRD 修订标记、由 Lens 管理的 router EPP，使其重新注册 `InferenceModelRewrite` API。
+升级后首次执行该操作时，会重启所有已发布的 EPP 一次。
+
 每个字段名称旁都有问号图标，悬停或通过键盘聚焦可查看说明。切换集群会清空提供方选择和
 提供方模型名称。没有就绪部署时，界面会明确说明原因。新模型的两个记录在同一事务内创建，
 任意一个保存失败都不会留下部分记录。

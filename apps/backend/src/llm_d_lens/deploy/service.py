@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
+from llm_d_lens.cluster.gateway_crds import ensure_router_crds
 from llm_d_lens.core.hashing import stable_hash
 from llm_d_lens.deploy.contracts import (
     ConfigurationArtifact,
@@ -35,10 +36,18 @@ from llm_d_lens.deploy.providers.guide_catalog import GuideCatalog
 from llm_d_lens.deploy.providers.hardware_profile import pin_runtime_image
 from llm_d_lens.infrastructure.artifacts.store import register_artifacts
 from llm_d_lens.infrastructure.storage.paths import storage_path
+from llm_d_lens.versions import router_chart_version
 
 logger = logging.getLogger(__name__)
 
 NamespaceFactory = Callable[[DeploymentCreateRequest], str]
+
+#: Providers whose deployment contract either omits ``data_plane_kind`` (saved
+#: Configuration manifests) or renders the llm-d router chart, so their EPP
+#: needs the pinned router CRDs before it starts.
+_ROUTER_PROVIDER_REFS = frozenset(
+    {"optimized-baseline", "pd-disaggregation", "precise-prefix-cache-routing", "tiered-prefix-cache"}
+)
 
 # Workers build separate service instances for polling. Creation owns readiness
 # until deploy and its initial readiness check finish; polling must not race it.
@@ -470,6 +479,33 @@ class GuideAdapterDeploymentService:
             if callable(on_initial_execution):
                 with contextlib.suppress(Exception):
                     on_initial_execution(initial_execution)
+            cluster_id = request.provenance.get("cluster_server_id")
+            router_backed = data_plane in {"shared_gateway", "standalone_router"} or (
+                artifact_input.provider_ref in _ROUTER_PROVIDER_REFS
+            )
+            if router_backed and cluster_id:
+                # The EPP registers the InferenceModelRewrite GVK at startup, so
+                # the pinned router CRDs must exist before the deployment runs.
+                # Fail closed: a missing/failed CRD install stops the deploy.
+                bundle = provider_artifact.deployment_contract.get("deploymentBundle") or {}
+                helm_bundle = bundle.get("helm") if isinstance(bundle, dict) else None
+                saved_router_version = helm_bundle.get("version") if isinstance(helm_bundle, dict) else None
+                if saved_router_version and saved_router_version != router_chart_version():
+                    logger.warning(
+                        "Deployment %s: saved router version %s is not managed by this CRD preflight "
+                        "(pinned %s); skipping the llm-d router CRD install",
+                        execution_id,
+                        saved_router_version,
+                        router_chart_version(),
+                    )
+                else:
+                    router_crds = await ensure_router_crds(cluster_id)
+                    if not router_crds.get("ok"):
+                        raise RuntimeError(
+                            "llm-d router CRDs are not ready "
+                            f"({router_crds.get('message') or 'unknown error'}); "
+                            "install them from the cluster's CRDs action before deploying"
+                        )
             provider_execution = await adapter.deploy(
                 provider_artifact,
                 {

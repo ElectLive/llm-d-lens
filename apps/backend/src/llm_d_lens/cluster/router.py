@@ -440,24 +440,36 @@ async def read_cluster_image_prepull(cluster_id: str) -> dict:
 
 @router.post(
     "/clusters/{cluster_id}/crds",
-    summary="Apply the pinned Gateway API / Gateway API Inference Extension CRDs.",
+    summary="Apply the pinned Gateway API / Gateway API Inference Extension / llm-d Router CRDs.",
     description=(
-        "Apply the Gateway API and Gateway API Inference Extension CRD bundles pinned by the Lens "
-        "stack profile. Returns a per-bundle result."
+        "Apply the Gateway API, Gateway API Inference Extension and llm-d Router CRD bundles pinned by "
+        "the Lens stack profile. Returns a per-bundle result. When the llm-d Router bundle is ready, "
+        "the CRDs action also restarts Lens-managed router EPPs whose pod template lacks the marker for "
+        "the current CRD revision, so they re-register the InferenceModelRewrite API. On first use after "
+        "upgrading, this restarts every published EPP once. The additive router_epp_repair key reports "
+        "that result."
     ),
     operation_id="create_cluster_crds",
 )
 async def create_cluster_crds(cluster_id: str) -> dict:
     registry.require_cluster(cluster_id)
-    return await gateway_crds.apply_gateway_crds(cluster_id)
+    results = await gateway_crds.apply_gateway_crds(cluster_id)
+    if results.get("llm_d_router", {}).get("ok"):
+        from llm_d_lens.model_service.gateway_ops import GatewayOpsService  # noqa: PLC0415
+
+        results["router_epp_repair"] = await GatewayOpsService().repair_router_rewrites(cluster_id)
+    else:
+        results["router_epp_repair"] = {"ok": False, "restarted": [], "message": "router CRDs are not ready"}
+    return results
 
 
 @router.get(
     "/clusters/{cluster_id}/crds",
-    summary="Get Gateway API / Gateway API Inference Extension CRD status.",
+    summary="Get Gateway API / Gateway API Inference Extension / llm-d Router CRD status.",
     description=(
-        "Report whether the pinned Gateway API and Gateway API Inference Extension CRDs are present "
-        "on the cluster (ready/missing per bundle)."
+        "Report whether the pinned Gateway API, Gateway API Inference Extension and llm-d Router CRDs "
+        "are present on the cluster (ready/missing per bundle). The llm-d Router bundle is ready only "
+        "when discovery also serves the inferencemodelrewrites resource."
     ),
     operation_id="get_cluster_crds",
 )

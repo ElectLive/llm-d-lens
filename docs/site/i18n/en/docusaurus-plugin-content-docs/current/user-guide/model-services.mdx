@@ -57,6 +57,12 @@ it to rewrite the request body's `model` field before the request reaches the
 model server, so clients use the public name while the engine keeps its own
 model name.
 
+Public aliases need the llm-d router CRDs (`inferencemodelrewrites.llm-d.ai`).
+Lens installs them before a router deployment starts. The cluster's CRDs action
+also restarts Lens-managed router EPPs whose pod template lacks the marker for
+the current CRD revision, so they re-register the `InferenceModelRewrite` API.
+On first use after upgrading, this restarts every published EPP once.
+
 Each field label has a question-mark icon. Hover over it or focus it with the
 keyboard to learn what the field does.
 Changing the cluster clears the selected provider and provider model name.
