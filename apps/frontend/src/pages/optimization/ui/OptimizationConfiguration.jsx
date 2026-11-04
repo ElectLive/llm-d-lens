@@ -1374,7 +1374,6 @@ export default function OptimizationConfiguration({ onNavigate, onCancel, onPubl
                         <div className="guide-template-bar mb-4 border-l-2 border-emerald-400/70 bg-emerald-500/5 px-3 py-2">
                             <h3 className="text-xs font-semibold uppercase tracking-wider text-emerald-300">Guide template</h3>
                         </div>
-                        {!['pd-disaggregation', 'tiered-prefix-cache'].includes(selection.guide) && guideVariants.length > 1 && <label className={labelClass}>Guide variant<select className={inputClass} value={guideVariant} onChange={event => setGuideVariant(event.target.value)}>{guideVariants.map(variant => <option key={variant} value={variant}>{variantLabel(variant)}</option>)}</select></label>}
                         {catalogError && (
                             <div className="mb-3 flex items-center gap-2 border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-200">
                                 <AlertTriangle className="h-4 w-4" /> {catalogError}
@@ -1413,6 +1412,9 @@ export default function OptimizationConfiguration({ onNavigate, onCancel, onPubl
                         {selection.guide === 'tiered-prefix-cache' && <div className="mt-3 grid gap-3 md:grid-cols-2">
                                 <ConfigurationField field="guideVariant"><span className={labelClass}>Tiered-prefix-cache variant</span><select className={inputClass} value={guideVariant} onChange={(event) => { setGuideVariant(event.target.value); setGuideSettings(current => ({ routerValues: current.routerValues || '' })); }}>{guideVariants.map((variant) => <option key={variant} value={variant}>{variantLabel(variant)}</option>)}</select><FieldHelp>Create separate base and offload artifacts, then select both in one Evaluation for a direct pairwise comparison.</FieldHelp></ConfigurationField>
 
+                            </div>}
+                        {!['pd-disaggregation', 'tiered-prefix-cache'].includes(selection.guide) && guideVariants.length > 1 && <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                <ConfigurationField field="guideVariant"><span className={labelClass}>Guide variant</span><select className={inputClass} value={guideVariant} onChange={event => setGuideVariant(event.target.value)}>{guideVariants.map(variant => <option key={variant} value={variant}>{variantLabel(variant)}</option>)}</select></ConfigurationField>
                             </div>}
                         <div className="mt-3 grid gap-3 md:grid-cols-3">
                             <ConfigurationField field="guideSourceMode">
