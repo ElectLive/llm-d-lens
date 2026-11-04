@@ -85,6 +85,8 @@ test('sidebar renders the administration accordions and fixed footer controls', 
   assert.match(html, /id="navigation-footer"/);
   assert.match(html, /Account menu/);
   assert.match(html, />Account</);
+  assert.match(html, />sidebar-test</);
+  assert.ok(html.indexOf('>Account<') < html.indexOf('>sidebar-test<'));
   assert.match(html, /aria-label="Lens Assistant"/);
   assert.match(html, /role="tooltip"[^>]*>Lens Assistant<\/span>/);
   assert.doesNotMatch(html.match(/<button[^>]*aria-label="Lens Assistant"[\s\S]*?<\/button>/)[0], />Lens Assistant</);
@@ -104,6 +106,7 @@ test('sidebar renders the administration accordions and fixed footer controls', 
   assert.match(collapsed, /aria-label="Account menu"/);
   assert.match(collapsed, /aria-label="Lens Assistant"/);
   assert.doesNotMatch(collapsed, />Account</);
+  assert.doesNotMatch(collapsed, />sidebar-test</);
   assert.match(collapsed, /role="tooltip"[^>]*>Lens Assistant<\/span>/);
   const activeAssistant = collapsed.match(/<button[^>]*aria-label="Lens Assistant"[\s\S]*?<\/button>/)[0];
   assert.match(activeAssistant, /aria-current="page"/);

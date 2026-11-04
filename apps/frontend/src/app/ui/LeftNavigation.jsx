@@ -274,7 +274,12 @@ export default function LeftNavigation({ currentView, onNavigate, isMobileOpen, 
                                 </span>
                                 {isExpanded && (
                                     <>
-                                        <span className="min-w-0 flex-1 truncate text-left text-xs font-semibold">Account</span>
+                                        <span className="flex min-w-0 flex-1 flex-col text-left">
+                                            <span className="truncate text-xs font-semibold leading-4">Account</span>
+                                            {principal.username && (
+                                                <span className="truncate text-[11px] font-normal leading-4">{principal.username}</span>
+                                            )}
+                                        </span>
                                         <ChevronDown size={14} className={cn('shrink-0 transition-transform', accountMenuOpen && 'rotate-180')} />
                                     </>
                                 )}
