@@ -6,7 +6,6 @@ All backends sharing evaluation records must also share this lock directory on
 a filesystem supporting flock. Separate data roots are separate installations.
 """
 
-import fcntl
 import os
 from contextlib import contextmanager
 from functools import wraps
@@ -16,6 +15,7 @@ from typing import get_type_hints
 
 from fastapi import HTTPException
 
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.storage.paths import storage_path
 
 _held = {}
@@ -42,11 +42,10 @@ def evaluation_lock(kind, identifier, *, allow_local=False, shared=False):
     else:
         handle = path.open("a+")
         try:
-            fcntl.flock(handle, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
-        except BlockingIOError:
-            handle.close()
-            yield False
-            return
+            if not current_host().try_lock(handle, shared=shared, blocking=False):
+                handle.close()
+                yield False
+                return
         except BaseException:
             handle.close()
             raise

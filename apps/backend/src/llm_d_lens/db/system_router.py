@@ -193,9 +193,8 @@ def apply_database_setup(request: DatabaseSetupRequest) -> DatabaseStatus:
 
     Also used directly (without going through HTTP/FastAPI) by
     ``llm_d_lens.db.bootstrap_cli``, the non-interactive entry point the
-    online installer (``scripts/LensInstaller-Ubuntu-x86_64-online.sh``) uses to configure
-    the database before the backend is ever started -- see that module's
-    docstring. Raises plain exceptions (``_ExternalConnectionError``,
+    online installer uses to configure the database before the backend is ever
+    started -- see that module's docstring. Raises plain exceptions (``_ExternalConnectionError``,
     ``DatabaseSettingsError``, or any other) rather than ``HTTPException`` so
     both callers can translate failures however fits their context.
     """

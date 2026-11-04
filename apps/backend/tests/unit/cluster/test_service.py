@@ -1450,6 +1450,125 @@ def test_node_summary_reads_accelerator_models_from_profile_labels():
     assert NodeSummary.model_validate(summary).gpu_models_by_profile == {"nvidia": ["NVIDIA-A100-SXM4-80GB"]}
 
 
+@pytest.mark.parametrize(
+    ("memory", "count", "expected"),
+    [
+        ("81920", "7", 7 * 80 * 1024**3),
+        (None, "7", 0),
+        ("invalid", "7", 0),
+        ("0", "7", 0),
+        ("-1", "7", 0),
+        ("NaN", "7", 0),
+        ("Infinity", "7", 0),
+        ("81920", None, 0),
+        ("81920", "70", 0),
+    ],
+)
+def test_node_summary_reads_verified_device_memory_labels(memory, count, expected):
+    labels = {"nvidia.com/gpu.product": "NVIDIA-A100-80GB-PCIe"}
+    if memory is not None:
+        labels["nvidia.com/gpu.memory"] = memory
+    if count is not None:
+        labels["nvidia.com/gpu.count"] = count
+    node = {
+        "metadata": {"name": "worker-a", "labels": labels},
+        "status": {"capacity": {"nvidia.com/gpu": "7", "nvidia.com/gpu.shared": "70"}},
+    }
+    summary = service._node_summary(node)
+    assert summary["gpuCount"] == 7
+    assert summary["vramBytes"] == expected
+
+
+def test_node_memory_label_discovery_uses_registered_profile_keys_and_units(monkeypatch):
+    from llm_d_lens.hardware.models import HardwareProfile
+
+    profile = HardwareProfile.from_dict(
+        {
+            "id": "test-gpu",
+            "display_name": "Test GPU",
+            "vendor": "test",
+            "request_model": "extended-resource",
+            "resource_prefixes": ["test.example/gpu"],
+            "planning": {
+                "node_memory": {
+                    "per_device_label": "test.example/memory",
+                    "count_label": "test.example/count",
+                    "unit": "Gi",
+                }
+            },
+        }
+    )
+    monkeypatch.setattr(service, "_hardware_profiles", lambda: [profile])
+    monkeypatch.setattr(service, "get_profile", lambda profile_id: profile)
+    summary = service._node_summary(
+        {
+            "metadata": {
+                "name": "worker-a",
+                "labels": {"test.example/memory": "24", "test.example/count": "2"},
+            },
+            "status": {"capacity": {"test.example/gpu": "2"}},
+        }
+    )
+    assert summary["vramBytes"] == 48 * 1024**3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("source", "per_gpu_gib"), [("labels", 80), ("dra", 32), ("prometheus", 24)])
+async def test_overview_prefers_prometheus_then_dra_then_node_label_vram(monkeypatch, tmp_path, source, per_gpu_gib):
+    kubeconfig = tmp_path / "kubeconfig"
+    kubeconfig.write_text("")
+    monkeypatch.setattr(registry, "kubeconfig_path", lambda _id: kubeconfig)
+    node = {
+        "metadata": {
+            "name": "worker-a",
+            "labels": {
+                "nvidia.com/gpu.product": "NVIDIA-A100-80GB-PCIe",
+                "nvidia.com/gpu.memory": "81920",
+                "nvidia.com/gpu.count": "7",
+            },
+        },
+        "status": {"capacity": {"nvidia.com/gpu": "7"}},
+    }
+    slices = [
+        {
+            "spec": {
+                "driver": "gpu.nvidia.com",
+                "nodeName": "worker-a",
+                "devices": [{"name": f"gpu-{index}", "capacity": {"memory": {"value": "32Gi"}}} for index in range(7)],
+            }
+        }
+    ]
+
+    async def query(args, **_kwargs):
+        items = [node] if args[1] == "nodes" else slices if args[1] == "resourceslices.resource.k8s.io" else []
+        if source == "labels" and args[1] == "resourceslices.resource.k8s.io":
+            items = []
+        return CommandResult(argv=(), returncode=0, stdout=json.dumps({"items": items}), stderr="")
+
+    metrics = (
+        {
+            "vramBytes": 7 * 24 * 1024**3,
+            "nodeVram": {"worker-a": {"totalBytes": 7 * 24 * 1024**3}},
+        }
+        if source == "prometheus"
+        else {}
+    )
+    monkeypatch.setattr(service, "run_kubectl", query)
+    monkeypatch.setattr(service, "monitoring_component", AsyncMock(return_value={}))
+    monkeypatch.setattr(service, "_prometheus_hardware_metrics", AsyncMock(return_value=metrics))
+    monkeypatch.setattr(service, "_node_disk_usage", AsyncMock(return_value={}))
+    overview = await service.build_overview(SimpleNamespace(id="cluster-a"))
+    assert overview["hardware"]["gpuCount"] == 7
+    assert overview["hardware"]["vramBytes"] == 7 * per_gpu_gib * 1024**3
+    assert overview["nodes"][0]["vramBytes"] == 7 * per_gpu_gib * 1024**3
+    assert all(gpu["vramTotalBytes"] == per_gpu_gib * 1024**3 for gpu in overview["nodes"][0]["gpus"])
+    if source == "labels":
+        assert overview["hardware"]["vramUsagePercent"] is None
+        assert overview["nodes"][0]["vramUsagePercent"] is None
+        assert all(gpu["vramUsedBytes"] is None for gpu in overview["nodes"][0]["gpus"])
+        assert all(gpu["vramUsagePercent"] is None for gpu in overview["nodes"][0]["gpus"])
+
+
 def test_node_summary_counts_extended_resources_per_profile_and_excludes_monitor_marker():
     node = {
         "metadata": {"name": "node-a", "labels": {}},

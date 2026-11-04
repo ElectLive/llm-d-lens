@@ -6,7 +6,6 @@ import asyncio
 import base64
 import json
 import os
-import signal
 import tempfile
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -16,6 +15,7 @@ from kubernetes.aio.client import Configuration
 from kubernetes.aio.config.config_exception import ConfigException
 from kubernetes.aio.config.kube_config import KubeConfigLoader, KubeConfigMerger
 
+from llm_d_lens.infrastructure.hostos import UnsupportedHostOperation, current_host
 from llm_d_lens.infrastructure.kubernetes.proxy import ensure_api_server_proxy_bypass, server_host
 from llm_d_lens.infrastructure.process import shell
 
@@ -32,10 +32,11 @@ async def _terminate_exec(process):
     # Descendants can retain the pipes even after the direct helper has exited.
     # Each POSIX helper owns a new process group so cleanup reaches those writers.
     with suppress(ProcessLookupError):
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGKILL)
-        elif process.returncode is None:
-            process.kill()
+        try:
+            current_host().signal_group(process.pid, force=True)
+        except UnsupportedHostOperation:
+            if process.returncode is None:
+                process.kill()
     try:
         await asyncio.wait_for(process.communicate(), _EXEC_CLEANUP_TIMEOUT)
     except TimeoutError:
@@ -93,6 +94,10 @@ async def _run_exec(execution: dict, base_path: str, cluster: dict) -> dict:
     environment["KUBERNETES_EXEC_INFO"] = json.dumps(
         {"apiVersion": version, "kind": "ExecCredential", "spec": specification}
     )
+    try:
+        group_kwargs = current_host().group_spawn_kwargs()
+    except UnsupportedHostOperation:
+        group_kwargs = {}
     process = await shell.spawn(
         [command, *arguments],
         env=environment,
@@ -100,7 +105,7 @@ async def _run_exec(execution: dict, base_path: str, cluster: dict) -> dict:
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        start_new_session=os.name == "posix",
+        **group_kwargs,
     )
     try:
         stdout, _stderr = await asyncio.wait_for(process.communicate(), _EXEC_TIMEOUT)

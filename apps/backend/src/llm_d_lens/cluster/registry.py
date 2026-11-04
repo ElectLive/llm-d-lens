@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from llm_d_lens.cluster.errors import ClusterOverviewError
 from llm_d_lens.cluster.settings import cluster_settings
+from llm_d_lens.infrastructure.hostos import current_host
 
 if TYPE_CHECKING:
     from llm_d_lens.db.dao.cluster import ClusterDao
@@ -230,7 +230,7 @@ def kubeconfig_path(cluster_id: str) -> Path:
         path.unlink(missing_ok=True)
         return path
     path.write_text(text)
-    os.chmod(path, 0o600)
+    current_host().restrict_to_owner(path)
     return path
 
 

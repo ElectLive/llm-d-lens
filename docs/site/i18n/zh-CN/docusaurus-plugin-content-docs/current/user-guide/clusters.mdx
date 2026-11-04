@@ -406,7 +406,8 @@ check() {
   local verb="$1" resource="$2"
   shift 2
   # A CRD that is not installed cannot be authorized; skip it here and let the
-  # wildcard group rule cover it once the chart/installer creates the CRD.
+  # wildcard group rule cover it once Lens installs the CRD or the chart/installer
+  # creates it.
   if [[ "$resource" == *.* && "$SERVED_RESOURCES" != *" $resource "* ]]; then
     printf '  SKIP: %-18s %-50s (CRD/API not installed)\n' "$verb" "$resource"
     return 0
@@ -675,7 +676,7 @@ info "  clusterrole: ${CLUSTER_ROLE}"
 4. 在 **Network Proxy（网络代理）**中保留自动检测；需要指定代理时，选择 **Custom proxy for this cluster** 并填写代理信息。
 5. 在 **Model gateway（模型网关）**中保留 **Istio**，按下表检查地址。
 6. 在 **Accelerator（加速器）**中选择集群实际安装的加速器类型及驱动访问模式。
-7. 在 **llm-d stack（llm-d 技术栈）**中检查版本，点击 **Next**，等待源码下载、镜像准备、Gateway CRD 和 LeaderWorkerSet（LWS）控制器安装完成。
+7. 在 **llm-d stack（llm-d 技术栈）**中检查版本，点击 **Next**，等待源码下载、镜像准备、Gateway 与 llm-d router CRD 以及 LeaderWorkerSet（LWS）控制器安装完成。
 8. 在 **Model Cache（模型缓存）**中保留建议的 Secret 命名空间和名称，将 [Hugging Face 设置](https://huggingface.co/settings/tokens)中的令牌填入 **HuggingFace token**。模型缓存存储卷为必填项：选择 **hostPath** 或 **NFS**，填写路径和容量；也可以选择立即预热模型。
 9. 点击 **Review（检查）**，核对摘要后点击 **Finish（完成）**。
 10. 等待各项操作完成，点击 **Done（结束）**。在列表中选择该集群，检查 **Workers（工作节点）**和 **Deployable GPU（可部署 GPU）**。
@@ -689,6 +690,11 @@ info "  clusterrole: ${CLUSTER_ROLE}"
 
 向导会在集群节点上安装软件并准备镜像。请只对有权管理的集群执行。
 准备步骤失败时，先解决对应错误，再完成向导。
+
+集群前置条件包括固定版本的 llm-d router CRD（`inferencemodelrewrites.llm-d.ai`）。
+Lens 会在任何新的 router 部署启动前安装它们。执行集群的 CRDs 操作时，Lens 还会重启
+pod 模板中缺少当前 CRD 修订标记、由 Lens 管理的 router EPP，使其重新注册
+`InferenceModelRewrite` API。升级后首次执行该操作时，会重启所有已发布的 EPP 一次。
 
 ## 通过 Kubespray 创建新集群
 

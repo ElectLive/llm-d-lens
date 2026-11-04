@@ -21,6 +21,7 @@ from typing import Literal
 
 import yaml
 
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.model_service.contracts import MAX_BACKEND_WEIGHT
 from llm_d_lens.versions import gateway_provider_version
 
@@ -820,7 +821,6 @@ def ensure_istioctl(version: str) -> Path:
     no leading ``v`` (e.g. ``1.29.2``); the download is cached under the Lens
     cache and reused.
     """
-    import platform  # noqa: PLC0415
     import tarfile  # noqa: PLC0415
     from pathlib import Path as _Path  # noqa: PLC0415
 
@@ -828,14 +828,15 @@ def ensure_istioctl(version: str) -> Path:
 
     from llm_d_lens.infrastructure.storage.paths import storage_path  # noqa: PLC0415
 
-    machine = platform.machine().lower()
-    arch = "arm64" if machine in {"aarch64", "arm64"} else "amd64"
+    tool_platform = current_host().tool_platform("go")
     root = _Path(storage_path("cache", "tools", "istioctl", version))
-    binary = root / "istioctl"
+    binary = root / f"istioctl{tool_platform.exe_suffix}"
     if binary.is_file() and os.access(binary, os.X_OK):
         return binary
     root.mkdir(parents=True, exist_ok=True)
-    url = f"https://github.com/istio/istio/releases/download/{version}/istioctl-{version}-linux-{arch}.tar.gz"
+    url = (
+        f"https://github.com/istio/istio/releases/download/{version}/istioctl-{version}-{tool_platform.joined()}.tar.gz"
+    )
     archive = root / "istioctl.tar.gz"
     with httpx.Client(follow_redirects=True, timeout=180) as client:
         response = client.get(url)
@@ -843,6 +844,6 @@ def ensure_istioctl(version: str) -> Path:
         archive.write_bytes(response.content)
     with tarfile.open(archive) as tar:
         tar.extractall(root)  # noqa: S202 - trusted Istio release archive
-    binary.chmod(0o755)
+    current_host().make_executable(binary, private=False)
     archive.unlink(missing_ok=True)
     return binary

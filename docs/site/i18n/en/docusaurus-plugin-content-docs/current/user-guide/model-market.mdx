@@ -68,12 +68,19 @@ again. A resource or network error during generation must be resolved before dep
 
 1. Open a model and fill in the deployment name, cluster and cache storage.
 2. Set **Mode** to **Agentic**.
-3. Choose **Use case** and **GPU capacity for planning**, then review the workload and performance-target fields. **Input tokens per request** (ISL) defaults to `4000` and **Output tokens per request** (OSL) to `1000`, matching native AIC search/recommend defaults. **TTFT SLO (ms)** defaults to `2000` and **TPOT SLO (ms)** to `30`; all are editable. There is no end-to-end latency input.
+3. Choose **Use case** and **GPU capacity for planning**, then review the workload and performance-target fields. **Mean input tokens per request** (ISL), **Mean output tokens per request** (OSL), **TTFT SLO (ms)** and **TPOT SLO (ms)** start blank. Their placeholder examples (`4000`, `1000`, `2000` and `30`) are not submitted as requirements. Mean input length is not copied into P95. There is no end-to-end latency input. In the planning prompt, TPOT targets can also use per-token units: `TPOT <= 20 ms/token` and `TPOT <= 0.02 s/token` both mean 20 milliseconds per token.
 4. Leave **AI provider** on **Default (no external AI provider)**, or select a configured provider to help rank the options.
 5. Optional: expand **Preference** and enter an English preference, such as `use fewer GPU resources` or `prefer prefix cache`.
 6. Click **Generate recommendation**.
 7. Under **Validated alternatives**, expand **Why this option** to compare resource use and estimated performance.
 8. Click **Deploy recommendation** on the option you choose. Track startup on **Deployments**.
+
+Agentic recommendation generation and recalculation skip model-file presence and
+download-readiness checks. A valid registered model-cache storage volume is still
+required. You can plan before downloading the model; deployment approval checks
+that the model is ready in the selected storage and resolves its current credential
+policy. Missing or incomplete models block deployment, not recommendation generation.
+Manual and Standard deployment checks are unchanged.
 
 Optionally, expand **Pod placement** before generating a recommendation to choose
 where the deployment runs.
@@ -93,6 +100,34 @@ next action, rather than silently falling back to predictions without a load tar
 
 To change the recommendation, enter your revised preference below the alternatives
 and click **Recalculate selection**. This also works without an external AI provider.
+
+Every new recommendation and recalculation queries published public SQL experiments
+before AIC planning, using the selected model. With an external AI provider, relevant
+public observations take precedence over AIC estimates in candidate generation and
+ranking; AIC supplements missing or inapplicable evidence. Live resource constraints
+and explicit operator preferences still apply. Different hardware, workloads, runtime
+versions, topologies or metric statistics are not interchangeable.
+
+Public retrieval also filters by the live target cluster's accelerator model, not
+the cluster name. Vendor/separator spelling differences may match, but memory size
+and PCIe/SXM variants remain distinct. Unknown or mixed hardware is reported;
+missing matches never fall back to another hardware family.
+
+Public benchmark records with a missing, blank or `unknown` runtime backend are
+treated as `vllm` for retrieval and planning context. Explicitly reported other
+backends are preserved and do not match a vLLM plan. This corpus default does not
+infer runtime versions or rewrite original evidence.
+
+Under **Decision evidence**, review **Public SQL measured observations** for
+the retrieval outcome, original values and units, source path, revision and checksum.
+No matches, query failures or missing authenticated global `benchmark-rag:query:read`
+permission are explicitly reported, and planning continues with existing evidence.
+Plans containing public RAG observations retain that same read-permission requirement.
+Without external AI, retrieved observations remain context only: they do not silently
+become deterministic performance predictions or change the displayed SLO assessment.
+
+Internal SQL experiments are listed separately. Agentic planning uses SQL evidence
+and does not require a document search service or independent search page.
 
 With an external AI provider, both generation and selection prompts put your full
 preference before the planning context. Explicit requirements such as one GPU or no

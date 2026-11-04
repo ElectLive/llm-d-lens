@@ -7,7 +7,6 @@ import csv
 import hashlib
 import json
 import os
-import platform
 import re
 import shlex
 from pathlib import Path
@@ -22,6 +21,7 @@ from llm_d_lens.cluster.deployment_source import resolve_cluster_deployment_sour
 from llm_d_lens.cluster.sessions import require_active_session
 from llm_d_lens.hardware.registry import all_profiles
 from llm_d_lens.hardware.resolver import resolve_by_device_class, resolve_by_resource
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.kubernetes import run_kubectl
 from llm_d_lens.infrastructure.process import ShellClient
 
@@ -287,22 +287,9 @@ async def machine_profile(inspect=True) -> dict:
             if argv and (detected := accelerator_output(profile, await command_output(argv))):
                 accelerator = detected
                 break
-    cpu_model = platform.processor() or "unknown"
-    cpu_file = Path("/proc/cpuinfo")
-    if cpu_file.is_file():
-        cpu_model = next(
-            (
-                line.split(":", 1)[1].strip()
-                for line in cpu_file.read_text().splitlines()
-                if line.startswith("model name")
-            ),
-            cpu_model,
-        )
+    machine = current_host().machine_info()
     return {
-        "hostname": platform.node(),
-        "platform": f"{platform.system()} {platform.release()} {platform.machine()}",
-        "cpu": {"model": cpu_model, "logicalCores": os.cpu_count() or 0},
-        "memoryGiB": round(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024**3, 1),
+        **machine,
         "accelerator": accelerator,
     }
 

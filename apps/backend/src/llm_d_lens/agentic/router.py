@@ -5,7 +5,11 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from llm_d_lens.agentic.public_benchmark_record.access import require_query_access
+from llm_d_lens.agentic.public_benchmark_record.case_retrieval import assert_case_access
 from llm_d_lens.auth.access import current_principal, owner_for_create
+from llm_d_lens.auth.contracts import Principal
+from llm_d_lens.core.exceptions import ForbiddenError, UnauthenticatedError
 
 from .models import (
     AgenticCandidateRefinementRequest,
@@ -18,6 +22,14 @@ from .streaming import planning_stream_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agentic-deployments", tags=["agentic-deployments"])
+
+
+def _require_plan_evidence_access(run: AgenticDeploymentRun, principal: Principal | None) -> None:
+    if any(item.source == "public-benchmark-rag" and item.status == "available" for item in run.planning_evidence):
+        require_query_access(principal)
+    for item in run.planning_evidence:
+        if item.source == "configuration-cases":
+            assert_case_access(tuple(item.details.get("cases", ())), principal)
 
 
 @router.post(
@@ -37,7 +49,7 @@ async def create_agentic_deployment(
 ) -> AgenticDeploymentRun:
     try:
         principal = current_principal(http_request)
-        return await service.create(request, principal_id=owner_for_create(principal))
+        return await service.create(request, principal_id=owner_for_create(principal), principal=principal)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -51,7 +63,9 @@ async def stream_agentic_deployment(
     principal_id = owner_for_create(principal)
 
     return planning_stream_response(
-        lambda on_progress: service.create(request, on_progress=on_progress, principal_id=principal_id),
+        lambda on_progress: service.create(
+            request, on_progress=on_progress, principal_id=principal_id, principal=principal
+        ),
         expected_errors=(ValueError,),
         failure_message="Unable to generate an Agentic recommendation.",
         on_unexpected_error=lambda: logger.exception("Agentic recommendation generation failed"),
@@ -69,8 +83,16 @@ async def stream_agentic_deployment(
     ),
     operation_id="list_agentic_plans",
 )
-async def list_agentic_deployments() -> list[AgenticDeploymentRun]:
-    return service.list()
+async def list_agentic_deployments(http_request: Request) -> list[AgenticDeploymentRun]:
+    principal = current_principal(http_request)
+    visible = []
+    for run in service.list():
+        try:
+            _require_plan_evidence_access(run, principal)
+        except (ForbiddenError, UnauthenticatedError):
+            continue
+        visible.append(run)
+    return visible
 
 
 @router.get(
@@ -84,10 +106,11 @@ async def list_agentic_deployments() -> list[AgenticDeploymentRun]:
     ),
     operation_id="get_agentic_plan",
 )
-async def get_agentic_deployment(run_id: str) -> AgenticDeploymentRun:
+async def get_agentic_deployment(run_id: str, http_request: Request) -> AgenticDeploymentRun:
     run = service.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="agentic deployment run not found")
+    _require_plan_evidence_access(run, current_principal(http_request))
     return run
 
 
@@ -104,8 +127,12 @@ async def get_agentic_deployment(run_id: str) -> AgenticDeploymentRun:
 async def select_agentic_candidate(
     run_id: str,
     request: AgenticCandidateSelectionRequest,
+    http_request: Request,
 ) -> AgenticDeploymentRun:
     try:
+        run = service.get(run_id)
+        if run is not None:
+            _require_plan_evidence_access(run, current_principal(http_request))
         return service.select_candidate(run_id, request.candidate_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
@@ -130,7 +157,10 @@ async def refine_agentic_deployment(
 ) -> AgenticDeploymentRun:
     try:
         principal = current_principal(http_request)
-        return await service.refine(run_id, request, principal_id=owner_for_create(principal))
+        run = service.get(run_id)
+        if run is not None:
+            _require_plan_evidence_access(run, principal)
+        return await service.refine(run_id, request, principal_id=owner_for_create(principal), principal=principal)
     except KeyError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
@@ -145,6 +175,9 @@ async def stream_refine_agentic_deployment(
 ) -> StreamingResponse:
     principal = current_principal(http_request)
     principal_id = owner_for_create(principal)
+    run = service.get(run_id)
+    if run is not None:
+        _require_plan_evidence_access(run, principal)
 
     return planning_stream_response(
         lambda on_progress: service.refine(
@@ -152,6 +185,7 @@ async def stream_refine_agentic_deployment(
             request,
             on_progress=on_progress,
             principal_id=principal_id,
+            principal=principal,
         ),
         expected_errors=(KeyError, ValueError),
         failure_message="Unable to recalculate the Agentic recommendation.",
@@ -171,6 +205,9 @@ async def stream_refine_agentic_deployment(
 )
 async def approve_agentic_deployment(run_id: str, request: Request = None) -> AgenticDeploymentRun:
     try:
+        run = service.get(run_id)
+        if run is not None:
+            _require_plan_evidence_access(run, current_principal(request))
         return await service.approve(run_id, owner_user_id=owner_for_create(current_principal(request)))
     except KeyError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error

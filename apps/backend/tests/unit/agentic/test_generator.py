@@ -2,10 +2,12 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
+from llm_d_lens.agentic.facts import PlanningHardwareSnapshot
 from llm_d_lens.agentic.generator import (
     AgenticMcpClient,
     AICandidateGenerator,
@@ -13,7 +15,13 @@ from llm_d_lens.agentic.generator import (
     CandidateProposal,
     CandidateValidator,
 )
-from llm_d_lens.agentic.planner import OpenAIPlannerSettings, PlanningFacts, WorkloadProfile
+from llm_d_lens.agentic.planner import (
+    OpenAIPlannerSettings,
+    PlanningFacts,
+    WorkloadProfile,
+    validate_request_context_budget,
+)
+from llm_d_lens.agentic.public_benchmark_record.case_retrieval import configuration_case_context
 from llm_d_lens.ai_providers.client import AIProviderClientError, AIToolCall, AIToolTurn
 from llm_d_lens.auth.security import verify_internal
 
@@ -29,6 +37,158 @@ def test_generator_schema_excludes_direct_vllm_and_accepts_optimized_baseline():
     assert "baseline-vllm" not in CandidateProposal.model_json_schema()["properties"]["provider_ref"]["enum"]
     with pytest.raises(ValidationError, match="provider_ref"):
         CandidateProposal.model_validate({**proposal, "provider_ref": "baseline-vllm"})
+
+
+def test_generator_context_budget_counts_tools_and_prevents_external_completion(monkeypatch):
+    class Tools:
+        async def available_tools(self):
+            cluster = _cluster_tool()
+            cluster["description"] = "x" * 100000
+            return [cluster, _aic_tool()]
+
+        async def call(self, *_args, **_kwargs):
+            pytest.fail("Over-budget request must not call MCP tools")
+
+    class Provider:
+        async def complete_tool_turn(self, **_kwargs):
+            pytest.fail("Over-budget generator request must not reach the provider")
+
+    monkeypatch.setattr("llm_d_lens.agentic.generator.client_for", lambda **_kwargs: Provider())
+    generator = AICandidateGenerator(
+        OpenAIPlannerSettings(base_url="http://provider", model="planner", context_window=65536),
+        tools=Tools(),
+    )
+    with pytest.raises(CandidateGenerationError, match="Model context budget exceeded"):
+        asyncio.run(generator.generate("cluster-a", "org/model", PlanningFacts(8, 32, 4), None))
+
+
+def test_generator_reselects_complete_evidence_for_growing_actual_tool_history(monkeypatch):
+    for module in ("generator", "planner", "facts"):
+        monkeypatch.setattr(f"llm_d_lens.agentic.{module}.load_model_config", lambda _model: None)
+    facts = PlanningFacts(
+        8,
+        32,
+        4,
+        configuration_cases=tuple(
+            {
+                "case_id": f"case:{index}",
+                "configuration": {"source_path": "precise_prefix_cache_aware/results.json"},
+                "measurements": [
+                    {
+                        "evidence_id": f"public-rag:{index}",
+                        "metric": "ttft",
+                        "unit": "ms",
+                        "statistic": "p95",
+                        "series": {"load": "x" * 20000},
+                    }
+                ],
+            }
+            for index in range(3)
+        ),
+        public_rag_evidence=tuple(
+            {"evidence_id": f"public-rag:{index}", "value": index, "unit": "ms"} for index in range(3)
+        ),
+    )
+    captured = []
+    settings = OpenAIPlannerSettings(base_url="http://provider", model="planner")
+
+    class Tools:
+        async def available_tools(self):
+            return [_cluster_tool(), _aic_tool()]
+
+        async def call(self, name, _arguments):
+            if name == "get_cluster_overview":
+                return {**_cluster_result(), "additional_history": "h" * 22000}
+            return _aic_result()
+
+    class Probe:
+        async def complete_tool_turn(self, **kwargs):
+            captured.append(json.loads(json.dumps(kwargs)))
+            raise AIProviderClientError("probe")
+
+    monkeypatch.setattr("llm_d_lens.agentic.generator.client_for", lambda **_kwargs: Probe())
+    with pytest.raises(CandidateGenerationError, match="probe"):
+        asyncio.run(AICandidateGenerator(settings, tools=Tools()).generate("cluster-a", "model", facts, None))
+    full_request = {
+        "model": settings.model,
+        **{key: value for key, value in captured.pop().items() if key != "max_tokens"},
+    }
+    bound = 2 * len(json.dumps(full_request, ensure_ascii=True).encode("utf-8")) + 8192 + 1024
+    settings = settings.model_copy(update={"context_window": bound - 1})
+
+    class Provider:
+        async def complete_tool_turn(self, **kwargs):
+            request = {
+                "model": settings.model,
+                **{key: value for key, value in kwargs.items() if key != "max_tokens"},
+            }
+            validate_request_context_budget(settings, request, completion_tokens=8192)
+            captured.append(json.loads(json.dumps(kwargs)))
+            if len(captured) == 1:
+                return AIToolTurn(
+                    tool_calls=[
+                        AIToolCall(id="cluster", name="get_cluster_overview", arguments={"clusterId": "cluster-a"}),
+                        AIToolCall(id="aic", name="search_candidates", arguments=_aic_arguments()),
+                    ]
+                )
+            if len(captured) == 2:
+                return AIToolTurn(content="Continue gathering the final submission.")
+            return AIToolTurn(
+                tool_calls=[
+                    AIToolCall(
+                        id="submit",
+                        name="submit_candidate_proposals",
+                        arguments={
+                            "candidates": [
+                                {
+                                    "provider_ref": "optimized-baseline",
+                                    "replicas": 1,
+                                    "tensor_parallel_size": 1,
+                                    "rationale": "Historical reference; current SLO remains unknown.",
+                                }
+                            ]
+                        },
+                    ),
+                ]
+            )
+
+    monkeypatch.setattr("llm_d_lens.agentic.generator.client_for", lambda **_kwargs: Provider())
+    generator = AICandidateGenerator(settings, tools=Tools())
+    result = asyncio.run(generator.generate("cluster-a", "model", facts, None))
+    assert result.resolved.facts.configuration_cases == facts.configuration_cases[:1]
+    assert result.resolved.facts.public_rag_evidence == facts.public_rag_evidence[:1]
+    assert result.resolved.facts.configuration_case_status["excluded"] == {
+        "case:1": "request_context_budget",
+        "case:2": "request_context_budget",
+        "public-rag:1": "request_context_budget",
+        "public-rag:2": "request_context_budget",
+    }
+    validated = CandidateValidator().validate(result.resolved.facts, result.proposals.candidates)
+    assert validated.accepted[0].reference_material_ids == ["case:0", "public-rag:0"]
+    assert "case:0" not in validated.accepted[0].evidence_ids
+    for request in captured:
+        serialized = json.dumps(request)
+        assert "precise_prefix_cache_aware" not in serialized
+        assert "configuration_case_evidence_ids" not in serialized
+        assert "case:0" not in serialized and "public-rag:0" not in serialized
+    contexts = [
+        json.loads(request["messages"][0]["content"].split("Planning context (JSON):\n", 1)[1]) for request in captured
+    ]
+    assert (
+        contexts[0]["configuration_cases"]
+        == configuration_case_context(facts.configuration_cases[:2], {})["configuration_cases"]
+    )
+    assert (
+        contexts[1]["configuration_cases"]
+        == configuration_case_context(facts.configuration_cases[:1], {})["configuration_cases"]
+    )
+    assert (
+        contexts[2]["configuration_cases"]
+        == configuration_case_context(facts.configuration_cases[:1], {})["configuration_cases"]
+    )
+    assert captured[1]["messages"][1:] == captured[2]["messages"][1:3]
+    assert len(captured[0]["messages"]) == 1
+    assert facts.configuration_cases[2]["case_id"] == "case:2"
 
 
 @pytest.mark.parametrize("operator_prompt", [None, "", "single GPU, no PD"])
@@ -133,6 +293,43 @@ def test_validator_drops_ai_evidence_ids_not_present_in_authoritative_facts():
     result = CandidateValidator().validate(facts, [proposal])
 
     assert result.accepted[0].evidence_ids == ["cluster-overview:cluster-a"]
+
+
+def test_validator_records_supplied_reference_material_without_claiming_model_usage():
+    facts = PlanningFacts(
+        8,
+        32,
+        4,
+        configuration_cases=(
+            {
+                "case_id": "case:authorized",
+                "measurements": [{"evidence_id": "benchmark:authorized"}],
+            },
+        ),
+    )
+    proposal = CandidateProposal(
+        provider_ref="optimized-baseline",
+        replicas=1,
+        tensor_parallel_size=1,
+        rationale="Adapt the supplied case.",
+        evidence_ids=["case:authorized", "benchmark:authorized", "case:invented"],
+    )
+    result = CandidateValidator().validate(facts, [proposal])
+    assert result.accepted[0].reference_material_ids == ["case:authorized", "benchmark:authorized"]
+    assert not result.accepted[0].evidence_ids
+
+
+def test_generator_schema_rejects_unknown_fields():
+    field = "unknown_field"
+    assert field not in CandidateProposal.model_json_schema()["properties"]
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        CandidateProposal(
+            provider_ref="optimized-baseline",
+            replicas=1,
+            tensor_parallel_size=1,
+            rationale="Bounded proposal.",
+            **{field: ["invented"]},
+        )
 
 
 def test_candidate_proposal_normalizes_pd_decode_aliases():
@@ -242,6 +439,20 @@ def _mcp_cluster_result():
     }
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_resolve_mcp_facts_rejects_missing_live_vram_despite_retired_overrides(monkeypatch, nested):
+    monkeypatch.setenv("AGENTIC_TEST_CLUSTER_VRAM_GIB_OVERRIDES", '{"cluster-a":80}')
+    overview = _mcp_cluster_result()
+    overview["kubernetes"]["hardware"]["vramBytes"] = 0
+    with pytest.raises(CandidateGenerationError, match="no usable accelerator VRAM"):
+        AICandidateGenerator._resolve_mcp_facts(
+            "cluster-a",
+            PlanningFacts(model_weight_gib=8, vram_per_gpu_gib=1, free_gpu_count=0),
+            {"get_cluster_overview": [overview if nested else overview["kubernetes"]]},
+        )
+    assert overview["kubernetes"]["hardware"]["vramBytes"] == 0
+
+
 def test_resolve_mcp_facts_accepts_nested_cluster_overview_hardware():
     resolved = AICandidateGenerator._resolve_mcp_facts(
         "cluster-a",
@@ -259,12 +470,32 @@ def test_resolve_mcp_facts_accepts_nested_cluster_overview_hardware():
     "accelerators,expected_system",
     [
         (None, "a100"),
-        ([{"id": "nvidia", "models": ["NVIDIA-A100-80GB-PCIe", "ampere"]}], "a100_sxm"),
+        ([{"id": "nvidia", "gpuCount": 4, "models": ["NVIDIA-A100-80GB-PCIe", "ampere"]}], "a100_sxm"),
         ([{"id": "unknown", "models": ["NVIDIA-A100-80GB-PCIe"]}], "a100"),
+        ([{"id": "nvidia", "gpuCount": 4, "models": ["H100"]}], "h100_sxm"),
     ],
 )
-def test_ai_generator_gets_required_evidence_via_model_selected_mcp_call(monkeypatch, accelerators, expected_system):
+@pytest.mark.parametrize("profile", [None, WorkloadProfile(), WorkloadProfile(shared_prefix_ratio=0)])
+@pytest.mark.parametrize("shared_snapshot", [False, True])
+def test_ai_generator_gets_required_evidence_via_model_selected_mcp_call(
+    monkeypatch, accelerators, expected_system, profile, shared_snapshot
+):
+    monkeypatch.setenv("AGENTIC_TEST_CLUSTER_HARDWARE_OVERRIDES", '{"cluster-a":"H200"}')
+    monkeypatch.setenv("AGENTIC_TEST_CLUSTER_VRAM_GIB_OVERRIDES", '{"cluster-a":96}')
     captured = {"tool_args": []}
+    discoveries = []
+
+    async def overview(cluster):
+        discoveries.append(cluster.id)
+        result = _cluster_result()
+        if accelerators is not None:
+            result["hardware"]["accelerators"] = accelerators
+        return result
+
+    monkeypatch.setattr(
+        "llm_d_lens.agentic.facts.registry.require_cluster", lambda cluster_id: SimpleNamespace(id=cluster_id)
+    )
+    monkeypatch.setattr("llm_d_lens.agentic.facts.build_overview", overview)
 
     class Tools:
         async def available_tools(self):
@@ -329,12 +560,24 @@ def test_ai_generator_gets_required_evidence_via_model_selected_mcp_call(monkeyp
         vram_per_gpu_gib=32,
         free_gpu_count=4,
         evidence_ids=("aic:search",),
+        public_rag_evidence=({"evidence_id": "public-rag:published-1", "citation": {"source_revision": "rev-1"}},),
+        workload_profile=profile,
     )
 
-    proposals = asyncio.run(generator.generate("cluster-a", "Qwen/Qwen3-8B", facts, "prefer throughput"))
+    async def generate():
+        snapshot = PlanningHardwareSnapshot("cluster-a") if shared_snapshot else None
+        if snapshot is not None:
+            first = await snapshot.get("cluster-a")
+            first["hardware"]["availableGpuCount"] = 0
+        return await generator.generate(
+            "cluster-a", "Qwen/Qwen3-8B", facts, "prefer throughput", hardware_snapshot=snapshot
+        )
 
+    proposals = asyncio.run(generate())
+
+    assert discoveries == (["cluster-a"] if shared_snapshot else [])
     assert captured["tool_args"] == [
-        ("get_cluster_overview", {"clusterId": "cluster-a"}),
+        *([] if shared_snapshot else [("get_cluster_overview", {"clusterId": "cluster-a"})]),
         (
             "search_candidates",
             {**_aic_arguments(), "searchConfig": {"aicSystemName": expected_system, "totalGpus": 4}},
@@ -348,13 +591,28 @@ def test_ai_generator_gets_required_evidence_via_model_selected_mcp_call(monkeyp
     user_context = json.loads(user_content.split("Planning context (JSON):\n", 1)[1])
     assert next(iter(user_context)) == "operator_preference"
     assert user_context["operator_preference"] == "prefer throughput"
+    assert "evidence_id" not in user_context["published_benchmark_evidence"][0]
+    assert "citation" not in user_context["published_benchmark_evidence"][0]
+    assert "public_rag_evidence" not in user_context
+    assert "RAG" not in captured["system_prompt"]
+    assert "structured SQL database" in captured["system_prompt"]
+    assert "missing evidence for this request" in captured["system_prompt"]
+    assert user_context["explicit_workload"] == (
+        {"shared_prefix_ratio": 0} if profile and profile.shared_prefix_ratio == 0 else {}
+    )
+    assert "takes precedence over AIC estimates" in captured["system_prompt"]
+    assert proposals.resolved.cluster_snapshot["hardware"].get("accelerators") == (
+        accelerators if accelerators is not None else _cluster_result()["hardware"].get("accelerators")
+    )
+    assert proposals.resolved.facts.public_rag_evidence == facts.public_rag_evidence
     assert "validated_planning_facts" not in user_context
     assert proposals.proposals.candidates[0].provider_ref == "optimized-baseline"
     assert proposals.resolved.facts.vram_per_gpu_gib == 32
     assert proposals.resolved.facts.free_gpu_count == 4
 
 
-def test_ai_generator_relaxes_only_after_empty_aic_search_and_freezes_original_targets(monkeypatch):
+@pytest.mark.parametrize("discovered", [False, True])
+def test_ai_generator_relaxes_only_after_empty_aic_search_and_freezes_original_targets(monkeypatch, discovered):
     calls = []
 
     class Tools:
@@ -364,7 +622,12 @@ def test_ai_generator_relaxes_only_after_empty_aic_search_and_freezes_original_t
         async def call(self, name, arguments):
             calls.append((name, arguments))
             if name == "get_cluster_overview":
-                return _cluster_result()
+                cluster = _cluster_result()
+                if discovered:
+                    cluster["hardware"]["accelerators"] = [
+                        {"id": "nvidia", "gpuCount": 4, "models": ["NVIDIA-A100-80GB-PCIe", "ampere"]}
+                    ]
+                return cluster
             if name == "search_candidates":
                 return {"candidates": []}
             anchor = {**_aic_result(ttft_ms=600)["candidates"][0], "decodeTp": 2, "totalGpus": 2}
@@ -430,19 +693,25 @@ def test_ai_generator_relaxes_only_after_empty_aic_search_and_freezes_original_t
         AICandidateGenerator(
             OpenAIPlannerSettings(base_url="http://provider", model="planner"),
             tools=Tools(),
-        ).generate("cluster-a", "model", PlanningFacts(8, 32, 4, ttft_slo_ms=500), None)
+        ).generate(
+            "cluster-a",
+            "model",
+            PlanningFacts(8, 32, 4, ttft_slo_ms=500),
+            None,
+        )
     )
 
     assert calls[1] == (
         "search_candidates",
         _aic_arguments()
         | {
+            "searchConfig": {"totalGpus": 4, **({"aicSystemName": "a100_sxm"} if discovered else {})},
             "workload": {
                 "model": "model",
                 "isl": 4000,
                 "osl": 1000,
                 "ttftMs": 500,
-            }
+            },
         },
     )
     assert calls[2] == (
@@ -450,7 +719,11 @@ def test_ai_generator_relaxes_only_after_empty_aic_search_and_freezes_original_t
         {
             "clusterId": "cluster-a",
             "workload": {"model": "model", "isl": 4000, "osl": 1000, "ttftMs": 500},
-            "searchConfig": {"capacityMode": "free", "customGpuCount": None},
+            "searchConfig": {
+                "capacityMode": "free",
+                "customGpuCount": None,
+                **({"aicSystemName": "a100_sxm"} if discovered else {}),
+            },
         },
     )
     assert result.resolved.facts.aic_predictions == ()
@@ -1393,7 +1666,7 @@ def test_aic_tool_arguments_use_requested_workload_and_slo():
     }
 
 
-def test_preference_constraints_override_form_values_for_aic_and_slo_filter(monkeypatch):
+def test_agreeing_preference_constraints_flow_to_aic_and_slo_filter(monkeypatch):
     calls = []
 
     class Tools:
@@ -1462,9 +1735,9 @@ def test_preference_constraints_override_form_values_for_aic_and_slo_filter(monk
                 0.7,
                 32,
                 4,
-                ttft_slo_ms=300,
-                tpot_slo_ms=20,
-                workload_profile=WorkloadProfile(mean_input_tokens=4096, mean_output_tokens=512),
+                ttft_slo_ms=500,
+                tpot_slo_ms=50,
+                workload_profile=WorkloadProfile(mean_input_tokens=1000, mean_output_tokens=200),
             ),
             "user requests have an ISL of 1000 and an OSL of 200, requiring a TTFT of <= 500ms "
             "and a TPOT of <= 50ms under 10 concurrent users.",
@@ -1511,9 +1784,9 @@ def test_preference_only_supplies_workload_and_slo_for_aic():
     assert facts.workload_profile.concurrency == 10
 
 
-def test_preference_natural_language_upper_limits_override_aic_targets():
+def test_preference_natural_language_upper_limits_constrain_aic_targets():
     facts = AICandidateGenerator._apply_preference_constraints(
-        PlanningFacts(0.7, 32, 4, ttft_slo_ms=50, tpot_slo_ms=20),
+        PlanningFacts(0.7, 32, 4),
         "TTFT less than 40, TPOT less than 10",
     )
     tool = AIToolCall(id="aic", name="search_candidates", arguments={"workload": {"ttftMs": 50, "tpotMs": 20}})
@@ -1717,7 +1990,9 @@ def test_ai_generator_prompt_encodes_candidate_priorities_and_tool_policy():
     prompt = AICandidateGenerator._system_prompt()
 
     assert "First request only get_cluster_overview and search_candidates" in prompt
-    assert "prefer those values over the corresponding deployment_intent fields" in prompt
+    assert "deployment_intent.requirements is the shared normalized requirements contract" in prompt
+    assert "never reinterpret raw preference text to override validated facts" in prompt
+    assert "Conflicting form/text requirements require confirmation, not a silent choice" in prompt
     assert "operator_preference as the primary recommendation criterion" in prompt
     assert prompt.index("explicit operator requirements") < prompt.index("Provider semantics:")
     assert "Never relax an explicit operator requirement" in prompt
@@ -1733,7 +2008,12 @@ def test_ai_generator_prompt_encodes_candidate_priorities_and_tool_policy():
     assert "deployment_intent.use_case and its resolved workload signals" in prompt
     assert "code-generation or a high shared_prefix_ratio" not in prompt
     assert "prefill_heavy workloads, prefer pd-disaggregation" not in prompt
-    assert "historical" not in prompt
+    assert "historical configuration references, not current deployment SLO proof" in prompt
+    assert "mapping_basis=source_label" in prompt
+    assert "Do not describe the technique mapping as unverified" in prompt
+    assert "Configuration equivalence and performance transfer still require validation" in prompt
+    assert "unverified_source_hint" not in prompt
+    assert "never combine different cases or series into synthetic measurements" in prompt
     assert "materially diverse candidates" in prompt
     assert "each feasible provider_ref" in prompt
     assert "GPU memory pressure" in prompt
@@ -1743,6 +2023,10 @@ def test_ai_generator_prompt_encodes_candidate_priorities_and_tool_policy():
     assert "If the initial search is empty, use the relaxed anchor" in prompt
     assert "operator_preference may select a provider but does not justify additional resources by itself" in prompt
     assert "Relaxed-anchor scaling remains unverified" in prompt
+    assert "When explicit_workload is empty, do not use workload as an applicability gate" in prompt
+    assert "Work backward from published TTFT/TPOT observations and their associated configurations" in prompt
+    assert "cited public TTFT/TPOT configuration evidence supports additional resources" in prompt
+    assert "shared_prefix_ratio of zero and the general-chat use case do not establish zero prefix reuse" in prompt
     assert "baseline-vllm" not in prompt
     assert "optimized-baseline: vLLM with llm-d prefix-affinity" in prompt
     assert "pd-disaggregation: separate prefill and decode roles" in prompt

@@ -125,10 +125,9 @@ async function waitForVolumeReady(volumeId, { timeoutMs = 120000, intervalMs = 2
 
 
 export function CreateClusterWizard({ onClose, onCreated }) {
-    // The application database is configured once at install time (see
-    // scripts/LensInstaller-Ubuntu-x86_64.sh and
-    // llm_d_lens/db/bootstrap_cli.py), not here -- this is just a sanity
-    // check that surfaces a clear error if that step was ever skipped.
+    // The application database is configured once at install time by the
+    // online installer (see llm_d_lens/db/bootstrap_cli.py), not here -- this is
+    // just a sanity check that surfaces a clear error if that step was ever skipped.
     const [dbStatus, setDbStatus] = useState(null); // null while loading, else DatabaseStatus
     const [dbStatusError, setDbStatusError] = useState('');
     useEffect(() => {
@@ -188,8 +187,8 @@ export function CreateClusterWizard({ onClose, onCreated }) {
     // Model-server/router image pre-pull onto every node for the selected accelerators.
     const [imagePulling, setImagePulling] = useState(false);
     const [imagePullStatus, setImagePullStatus] = useState(null); // { state, ready, desired, nodes, images }
-    // Gateway API / Gateway API Inference Extension CRD presence on the cluster.
-    const [crdStatus, setCrdStatus] = useState(null); // { gateway_api, gateway_api_inference_extension }
+    // Gateway API / Gateway API Inference Extension / llm-d Router CRD presence on the cluster.
+    const [crdStatus, setCrdStatus] = useState(null); // { gateway_api, gateway_api_inference_extension, llm_d_router }
     // LeaderWorkerSet controller + DisaggregatedSet API used by the P/D Guide.
     const [lwsStatus, setLwsStatus] = useState(null); // { ready, crd, controller, version, message }
     // Reachability + Kubernetes-version check after the kubeconfig upload.
@@ -536,14 +535,15 @@ export function CreateClusterWizard({ onClose, onCreated }) {
                         return;
                     }
                 }
-                // Apply the pinned Gateway API / GIE CRDs (idempotent) and stay on
-                // this step until both are present.
+                // Apply the pinned Gateway API / GIE / llm-d Router CRDs
+                // (idempotent) and stay on this step until all are present.
                 const crds = await applyClusterCrds(nextCluster.id);
                 setCrdStatus({
                     gateway_api: crds.gateway_api?.ok ? 'ready' : 'missing',
                     gateway_api_inference_extension: crds.gateway_api_inference_extension?.ok ? 'ready' : 'missing',
+                    llm_d_router: crds.llm_d_router?.ok ? 'ready' : 'missing',
                 });
-                if (!crds.gateway_api?.ok || !crds.gateway_api_inference_extension?.ok) {
+                if (!crds.gateway_api?.ok || !crds.gateway_api_inference_extension?.ok || !crds.llm_d_router?.ok) {
                     return;
                 }
                 // Install the pinned LeaderWorkerSet controller; llm-d v1.0 P/D
@@ -702,17 +702,15 @@ export function CreateClusterWizard({ onClose, onCreated }) {
     }
 
     if (!dbStatus.configured) {
-        // The database is now configured once at install time (see
-        // scripts/LensInstaller-Ubuntu-x86_64.sh and
-        // llm_d_lens/db/bootstrap_cli.py) rather than lazily from this
-        // wizard, so reaching this should only ever happen if the installer
+        // The database is now configured once at install time by the online
+        // installer (see llm_d_lens/db/bootstrap_cli.py) rather than lazily from
+        // this wizard, so reaching this should only ever happen if the installer
         // was skipped or the bootstrap file was manually removed.
         return (
             <Modal isOpen onClose={onClose} title="Add a Kubernetes cluster" size="lg">
                 <div role="alert" className="flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-200">
                     <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                    Prism's database is not configured yet. Re-run the installer
-                    (<code>LensInstaller-Ubuntu-x86_64.sh</code>) to set it up, then reopen this wizard.
+                    Prism's database is not configured yet. Re-run the Lens installer to set it up, then reopen this wizard.
                 </div>
             </Modal>
         );
@@ -994,6 +992,7 @@ export function CreateClusterWizard({ onClose, onCreated }) {
                                 rows: [
                                     { label: 'Kubernetes Gateway API', value: stackVersions?.k8s_gateway_api, crd: 'gateway_api' },
                                     { label: 'Gateway API Inference Extension', value: stackVersions?.k8s_gateway_api_inference_extension, crd: 'gateway_api_inference_extension' },
+                                    { label: 'llm-d Router CRDs', value: stackVersions?.llm_d_router, crd: 'llm_d_router' },
                                     {
                                         label: 'LeaderWorkerSet (LWS) controller',
                                         value: stackVersions?.k8s_lws,
@@ -1428,14 +1427,14 @@ export function CreateClusterWizard({ onClose, onCreated }) {
                                 <ReviewRow label="Payload processor" mono>{stackVersions?.llm_d_inference_payload_processor || 'Pinned'}</ReviewRow>
                                 <ReviewRow label="Gateway API" mono>
                                     {stackVersions?.k8s_gateway_api
-                                        ? `${stackVersions.k8s_gateway_api} / ${stackVersions.k8s_gateway_api_inference_extension || '—'}`
+                                        ? `${stackVersions.k8s_gateway_api} / ${stackVersions.k8s_gateway_api_inference_extension || '—'} / ${stackVersions.llm_d_router || '—'}`
                                         : 'Pinned'}
                                 </ReviewRow>
                                 <ReviewRow label="LeaderWorkerSet" mono>{stackVersions?.k8s_lws || 'Pinned'}</ReviewRow>
                                 <ReviewRow label="CRDs">
                                     {crdStatus ? (
                                         <StatusChip
-                                            status={crdStatus.gateway_api === 'ready' && crdStatus.gateway_api_inference_extension === 'ready' ? 'ready' : 'missing'}
+                                            status={crdStatus.gateway_api === 'ready' && crdStatus.gateway_api_inference_extension === 'ready' && crdStatus.llm_d_router === 'ready' ? 'ready' : 'missing'}
                                             size="xs"
                                         />
                                     ) : (

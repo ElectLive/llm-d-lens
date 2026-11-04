@@ -62,8 +62,11 @@ The only public installation entry is
 download stage, installation engine and Shell release-version commands.
 After downloading the source archive, it invokes the archive's copy in internal
 source-install mode instead of downloading recursively.
-CI checks Shell syntax/lint, version consistency, standalone help and private
-Python provisioning on Ubuntu 22.04.
+CI checks Shell syntax/lint, version consistency, standalone help, private
+Python provisioning and the host OS layer command line (`check`, `info`,
+`packages missing`) on Ubuntu 22.04 with its system Python 3.10. It also checks
+the generated `lensctl.sh` with `bash -n` and shellcheck, and runs when the host
+OS layer source changes.
 
 ## Repository language
 
@@ -127,6 +130,17 @@ or `restart server` restarts only the requested service. Use `restart all` for
 port/environment changes and API changes that alter the server MCP catalog.
 Actual service ports are recorded for targeted restarts. For a session started
 with an older launcher, run `restart all` once to initialize that state.
+
+Failed Deploy Kubernetes commands emit `deployment_kubernetes_command_failed`
+in backend logs. The structured record identifies the transport, namespace, CLI
+PID, selected API origin, kubeconfig/cache paths, sanitized proxy origins and
+literal API-host entries in each `NO_PROXY` variant. CIDR/domain bypass rules
+are not evaluated by this diagnostic. Credentials, full command arguments and
+raw kubeconfig contents are not logged; command results and retry behavior are
+unchanged.
+
+Alembic logging configuration keeps existing application loggers enabled when
+migration commands run in the same process.
 
 Follow [README.md](README.md) for setup. Choose checks appropriate to the change:
 

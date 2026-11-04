@@ -15,7 +15,7 @@ from llm_d_lens.db.dao.model_service_member import ModelServiceMemberDao
 from llm_d_lens.model_service import gateway_ops as gateway_ops_module
 from llm_d_lens.model_service.contracts import ModelServiceGroup, ModelServiceMember
 from llm_d_lens.model_service.gateway_contracts import GatewayOperation
-from llm_d_lens.model_service.gateway_ops import GatewayOpsService
+from llm_d_lens.model_service.gateway_ops import REWRITE_CRD_ANNOTATION, GatewayOpsService
 from llm_d_lens.model_service.gateway_providers import (
     CLUSTER_LABEL,
     MANAGED_LABEL,
@@ -1547,3 +1547,365 @@ async def test_reconcile_maps_public_model_name_to_served_model_name(monkeypatch
     assert "name: qwen-pool" in manifest
     assert "lens.llm-d.ai/cluster-id: cluster-a" in manifest
     assert "lens.llm-d.ai/rewrite-managed: 'true'" in manifest
+
+
+def _seed_epp_member(
+    *, cluster_id: str = "cluster-a", namespace: str = "ns", epp_ref: str = "qwen-epp", suffix: str = "a"
+) -> ModelServiceMember:
+    group = ModelServiceGroupDao().create(
+        ModelServiceGroup(
+            name=f"qwen-{suffix}",
+            model_ref="Qwen/Qwen3-8B",
+            cluster_id=cluster_id,
+            base_model="Qwen/Qwen3-8B",
+        )
+    )
+    return ModelServiceMemberDao().create(
+        ModelServiceMember(
+            group_id=group.id,
+            execution_id=f"exec-{suffix}",
+            cluster_id=cluster_id,
+            target_namespace=namespace,
+            target_service=epp_ref,
+            target_port=8000,
+            pool_name="qwen",
+            epp_ref=epp_ref,
+            endpoint_kind="llm-d-epp",
+        )
+    )
+
+
+def _workload(annotations: dict | None = None) -> str:
+    return json.dumps({"spec": {"template": {"metadata": {"annotations": annotations or {}}}}})
+
+
+@pytest.mark.asyncio
+async def test_repair_router_rewrites_patches_only_workloads_with_a_stale_marker():
+    member = _seed_epp_member()
+    service = GatewayOpsService()
+    patches: list[list[str]] = []
+
+    async def kubectl(cluster_id, argv, **_kwargs):
+        if list(argv[:2]) == ["get", "crd"]:
+            return _Result(stdout="uid-1/7")
+        if list(argv[:3]) == ["get", "deploy", member.epp_ref]:
+            return _Result(stdout=_workload({REWRITE_CRD_ANNOTATION: "uid-1/6"}))
+        if argv[0] == "patch":
+            patches.append(list(argv))
+            return _Result()
+        return _Result(returncode=1)
+
+    service._kubectl = kubectl
+
+    result = await service.repair_router_rewrites("cluster-a")
+
+    assert result == {"ok": True, "restarted": ["deploy/qwen-epp"], "message": ""}
+    assert "--type=merge" in patches[0]
+    patch = json.loads(patches[0][patches[0].index("-p") + 1])
+    assert patch["spec"]["template"]["metadata"]["annotations"][REWRITE_CRD_ANNOTATION] == "uid-1/7"
+
+
+@pytest.mark.asyncio
+async def test_repair_router_rewrites_skips_a_matching_marker():
+    member = _seed_epp_member()
+    service = GatewayOpsService()
+    calls: list[list[str]] = []
+
+    async def kubectl(cluster_id, argv, **_kwargs):
+        calls.append(list(argv))
+        if list(argv[:2]) == ["get", "crd"]:
+            return _Result(stdout="uid-1/7")
+        if list(argv[:3]) == ["get", "deploy", member.epp_ref]:
+            return _Result(stdout=_workload({REWRITE_CRD_ANNOTATION: "uid-1/7"}))
+        return _Result(returncode=1)
+
+    service._kubectl = kubectl
+
+    result = await service.repair_router_rewrites("cluster-a")
+
+    assert result == {"ok": True, "restarted": [], "message": ""}
+    assert not any(call[0] == "patch" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_repair_router_rewrites_falls_back_to_a_statefulset():
+    member = _seed_epp_member()
+    service = GatewayOpsService()
+    patches: list[list[str]] = []
+
+    async def kubectl(cluster_id, argv, **_kwargs):
+        if list(argv[:2]) == ["get", "crd"]:
+            return _Result(stdout="uid-1/7")
+        if list(argv[:3]) == ["get", "deploy", member.epp_ref]:
+            return _Result(returncode=1, stderr="deployments.apps not found")
+        if list(argv[:3]) == ["get", "statefulset", member.epp_ref]:
+            return _Result(stdout=_workload())
+        if argv[0] == "patch":
+            patches.append(list(argv))
+            return _Result()
+        return _Result(returncode=1)
+
+    service._kubectl = kubectl
+
+    result = await service.repair_router_rewrites("cluster-a")
+
+    assert result == {"ok": True, "restarted": ["statefulset/qwen-epp"], "message": ""}
+    assert patches[0][:3] == ["patch", "statefulset", "qwen-epp"]
+
+
+@pytest.mark.asyncio
+async def test_repair_router_rewrites_reports_individual_failures_without_raising():
+    first = _seed_epp_member(epp_ref="qwen-a", suffix="a")
+    second = _seed_epp_member(epp_ref="qwen-b", suffix="b")
+    service = GatewayOpsService()
+    patches: list[list[str]] = []
+
+    async def kubectl(cluster_id, argv, **_kwargs):
+        if list(argv[:2]) == ["get", "crd"]:
+            return _Result(stdout="uid-1/7")
+        if list(argv[:3]) == ["get", "deploy", first.epp_ref]:
+            return _Result(stdout=_workload())
+        if list(argv[:3]) == ["get", "deploy", second.epp_ref]:
+            return _Result(returncode=1, stderr="not found")
+        if list(argv[:3]) == ["get", "statefulset", second.epp_ref]:
+            return _Result(returncode=1, stderr="not found")
+        if argv[0] == "patch":
+            patches.append(list(argv))
+            return _Result()
+        return _Result(returncode=1)
+
+    service._kubectl = kubectl
+
+    result = await service.repair_router_rewrites("cluster-a")
+
+    assert result["ok"] is False
+    assert result["restarted"] == ["deploy/qwen-a"]
+    assert "qwen-b" in result["message"]
+    assert "workload not found" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_repair_router_rewrites_falls_back_to_a_statefulset_after_a_kubectl_error():
+    member = _seed_epp_member()
+    service = GatewayOpsService()
+    patches: list[list[str]] = []
+
+    async def kubectl(cluster_id, argv, **_kwargs):
+        if list(argv[:2]) == ["get", "crd"]:
+            return _Result(stdout="uid-1/7")
+        if list(argv[:3]) == ["get", "deploy", member.epp_ref]:
+            raise OSError("connection reset")
+        if list(argv[:3]) == ["get", "statefulset", member.epp_ref]:
+            return _Result(stdout=_workload())
+        if argv[0] == "patch":
+            patches.append(list(argv))
+            return _Result()
+        return _Result(returncode=1)
+
+    service._kubectl = kubectl
+
+    result = await service.repair_router_rewrites("cluster-a")
+
+    assert result == {"ok": True, "restarted": ["statefulset/qwen-epp"], "message": ""}
+    assert patches[0][:3] == ["patch", "statefulset", "qwen-epp"]
+
+
+@pytest.mark.asyncio
+async def test_repair_router_rewrites_reports_a_workload_lookup_error():
+    member = _seed_epp_member()
+    service = GatewayOpsService()
+
+    async def kubectl(cluster_id, argv, **_kwargs):
+        if list(argv[:2]) == ["get", "crd"]:
+            return _Result(stdout="uid-1/7")
+        if list(argv[:3]) == ["get", "deploy", member.epp_ref]:
+            return _Result(returncode=1, stderr="forbidden")
+        if list(argv[:3]) == ["get", "statefulset", member.epp_ref]:
+            return _Result(returncode=1, stderr="not found")
+        return _Result(returncode=1)
+
+    service._kubectl = kubectl
+
+    result = await service.repair_router_rewrites("cluster-a")
+
+    assert result["ok"] is False
+    assert result["restarted"] == []
+    assert "forbidden" in result["message"]
+    assert "not found" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_repair_router_rewrites_is_a_no_op_without_members():
+    service = GatewayOpsService()
+    calls: list[list[str]] = []
+
+    async def kubectl(cluster_id, argv, **_kwargs):
+        calls.append(list(argv))
+        return _Result(stdout="uid-1/7")
+
+    service._kubectl = kubectl
+
+    result = await service.repair_router_rewrites("cluster-a")
+
+    assert result == {"ok": True, "restarted": [], "message": ""}
+    assert len(calls) == 1
+    assert calls[0][:2] == ["get", "crd"]
+
+
+@pytest.mark.asyncio
+async def test_repair_router_rewrites_reports_a_missing_crd():
+    service = GatewayOpsService()
+
+    async def kubectl(cluster_id, argv, **_kwargs):
+        return _Result(
+            returncode=1,
+            stderr='customresourcedefinitions.apiextensions.k8s.io "inferencemodelrewrites.llm-d.ai" not found',
+        )
+
+    service._kubectl = kubectl
+
+    result = await service.repair_router_rewrites("cluster-a")
+
+    assert result["ok"] is False
+    assert result["restarted"] == []
+    assert "not found" in result["message"]
+
+
+def _stale_discovery_result(kind: str = "InferenceModelRewrite") -> _Result:
+    return _Result(
+        returncode=1,
+        stderr=f'no matches for kind "{kind}" in version "llm-d.ai/v1alpha2"; ensure CRDs are installed first',
+    )
+
+
+def _gateway_cluster() -> SimpleNamespace:
+    return SimpleNamespace(
+        gateway_provider="istio", gateway_namespace="lens-gateway", gateway_name="lens-inference-gateway"
+    )
+
+
+def _intercept_apply(monkeypatch, service: GatewayOpsService, *, marker: str, responses: list[_Result]) -> list[str]:
+    original = service._kubectl
+    attempts: list[str] = []
+    pending = list(responses)
+
+    async def kubectl(cluster_id, argv, **kwargs):
+        manifest = kwargs.get("input") or ""
+        if list(argv) == ["apply", "-f", "-"] and marker in manifest:
+            attempts.append(manifest)
+            return pending.pop(0)
+        return await original(cluster_id, argv, **kwargs)
+
+    monkeypatch.setattr(service, "_kubectl", kubectl)
+    return attempts
+
+
+def _seed_model_rewrite_member() -> ModelServiceMember:
+    group = ModelServiceGroupDao().create(
+        ModelServiceGroup(
+            name="qwen3-0.6b",
+            model_ref="Qwen/Qwen3-0.6B",
+            cluster_id="cluster-a",
+            served_name="Qwen/Qwen3-0.6B",
+            base_model="qwen3-0.6b",
+        )
+    )
+    return ModelServiceMemberDao().create(
+        ModelServiceMember(
+            group_id=group.id,
+            execution_id="exec-alias",
+            cluster_id="cluster-a",
+            target_namespace="ns",
+            target_service="qwen-epp",
+            target_port=80,
+            pool_name="ns/qwen-pool",
+            epp_ref="qwen-epp",
+            endpoint_kind="llm-d-epp",
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconcile_retries_the_route_apply_once_after_stale_discovery(monkeypatch):
+    _seed_member(cluster_id="cluster-a")
+    service = _service(calls=[])
+    monkeypatch.setattr(gateway_ops_module, "get_cluster", lambda _cid: _gateway_cluster())
+    invalidated: list[str] = []
+    monkeypatch.setattr(gateway_ops_module, "invalidate_cluster_discovery_cache", invalidated.append)
+    attempts = _intercept_apply(
+        monkeypatch,
+        service,
+        marker="kind: HTTPRoute",
+        responses=[_stale_discovery_result("HTTPRoute"), _Result(stdout="applied")],
+    )
+
+    operation = await service.reconcile_cluster_gateway("cluster-a")
+
+    assert operation.status == "succeeded"
+    assert invalidated == ["cluster-a"]
+    assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_reconcile_retries_the_rewrite_apply_once_after_stale_discovery(monkeypatch):
+    _seed_model_rewrite_member()
+    service = _service(calls=[], runner_cls=_ModelRewriteRunner)
+    monkeypatch.setattr(gateway_ops_module, "get_cluster", lambda _cid: _gateway_cluster())
+    invalidated: list[str] = []
+    monkeypatch.setattr(gateway_ops_module, "invalidate_cluster_discovery_cache", invalidated.append)
+    attempts = _intercept_apply(
+        monkeypatch,
+        service,
+        marker="kind: InferenceModelRewrite",
+        responses=[_stale_discovery_result(), _Result(stdout="applied")],
+    )
+
+    operation = await service.reconcile_cluster_gateway("cluster-a")
+
+    assert operation.status == "succeeded"
+    assert invalidated == ["cluster-a"]
+    assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_retry_a_different_apply_failure(monkeypatch):
+    _seed_member(cluster_id="cluster-a")
+    service = _service(calls=[])
+    monkeypatch.setattr(gateway_ops_module, "get_cluster", lambda _cid: _gateway_cluster())
+    invalidated: list[str] = []
+    monkeypatch.setattr(gateway_ops_module, "invalidate_cluster_discovery_cache", invalidated.append)
+    attempts = _intercept_apply(
+        monkeypatch,
+        service,
+        marker="kind: HTTPRoute",
+        responses=[_Result(returncode=1, stderr="forbidden")],
+    )
+
+    operation = await service.reconcile_cluster_gateway("cluster-a")
+
+    assert operation.status == "failed"
+    assert "forbidden" in operation.message
+    assert invalidated == []
+    assert len(attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_reconcile_fails_after_only_one_stale_discovery_retry(monkeypatch):
+    _seed_member(cluster_id="cluster-a")
+    service = _service(calls=[])
+    monkeypatch.setattr(gateway_ops_module, "get_cluster", lambda _cid: _gateway_cluster())
+    invalidated: list[str] = []
+    monkeypatch.setattr(gateway_ops_module, "invalidate_cluster_discovery_cache", invalidated.append)
+    attempts = _intercept_apply(
+        monkeypatch,
+        service,
+        marker="kind: HTTPRoute",
+        responses=[_stale_discovery_result("HTTPRoute"), _stale_discovery_result("HTTPRoute")],
+    )
+
+    operation = await service.reconcile_cluster_gateway("cluster-a")
+
+    assert operation.status == "failed"
+    assert "no matches for kind" in operation.message
+    assert invalidated == ["cluster-a"]
+    assert len(attempts) == 2

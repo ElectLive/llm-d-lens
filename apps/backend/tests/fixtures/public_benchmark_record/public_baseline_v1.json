@@ -1,0 +1,112 @@
+{
+  "name": "public-baseline-v1",
+  "source_pins": {
+    "prism:public-snapshot": {"revision": "2026-10-13"}
+  },
+  "cases": [
+    {
+      "case_id": "prism-exact-original-throughput",
+      "category": "numeric",
+      "request": {"question": "What was the recorded throughput for Prism ID 02c8f038-1cad-4ee8-a72e-724affa923f4?"},
+      "expected_matched_items": 1,
+      "expected_returned": 1,
+      "expected_truncated": false,
+      "allowed_origins": ["prism:public-snapshot"],
+      "allowed_evidence_types": ["raw_json"],
+      "required_values": ["6131.06177725188"],
+      "answer_contains": ["output tokens/s", "Qwen3-0.6B"]
+    },
+    {
+      "case_id": "prism-record-does-not-join-unrelated-hardware",
+      "category": "false_join",
+      "request": {
+        "question": "What was the throughput for Prism ID 02c8f038-1cad-4ee8-a72e-724affa923f4?",
+        "filters": {"hardware": "unreported baseline hardware"}
+      },
+      "expected_status": "abstained",
+      "expected_matched_items": 0,
+      "expected_returned": 0,
+      "expected_abstentions": ["no_exact_match"]
+    },
+    {
+      "case_id": "prism-record-does-not-join-unrelated-model",
+      "category": "false_join",
+      "request": {
+        "question": "What was the throughput for Prism ID 02c8f038-1cad-4ee8-a72e-724affa923f4?",
+        "filters": {"model": "unrelated baseline model"}
+      },
+      "expected_status": "abstained",
+      "expected_matched_items": 0,
+      "expected_returned": 0,
+      "expected_abstentions": ["no_exact_match"]
+    },
+    {
+      "case_id": "unsupported-multiple-id-comparison",
+      "category": "comparison",
+      "request": {
+        "question": "Compare throughput for 02c8f038-1cad-4ee8-a72e-724affa923f4 and 00000000-0000-4000-8000-000000000001"
+      },
+      "expected_status": "abstained",
+      "expected_matched_items": 0,
+      "expected_returned": 0,
+      "expected_abstentions": ["comparison_requires_explicit_scope"]
+    },
+    {
+      "case_id": "unsupported-unscoped-comparison",
+      "category": "comparison",
+      "request": {"question": "Compare throughput"},
+      "expected_status": "abstained",
+      "expected_matched_items": 0,
+      "expected_returned": 0,
+      "expected_abstentions": ["experiment_conditions_required"]
+    },
+    {
+      "case_id": "similar-model-names-do-not-prove-run-overlap",
+      "category": "overlap",
+      "request": {"question": "Are Prism and the guide the same experiment with identical model names?"},
+      "expected_status": "abstained",
+      "expected_matched_items": 0,
+      "expected_returned": 0,
+      "expected_abstentions": ["unverified_experiment_identity"]
+    },
+    {
+      "case_id": "inactive-prism-source-no-evidence",
+      "category": "access",
+      "actor": "inactive_source",
+      "request": {"question": "What was the throughput for Prism ID 02c8f038-1cad-4ee8-a72e-724affa923f4?"},
+      "expected_status": "abstained",
+      "expected_matched_items": 0,
+      "expected_returned": 0,
+      "expected_abstentions": ["no_exact_match"]
+    },
+    {
+      "case_id": "reader-permission-revoked",
+      "category": "access",
+      "actor": "forbidden",
+      "request": {"question": "What is a benchmark report intended to capture?"},
+      "expected_status": null,
+      "expected_error": "forbidden"
+    },
+    {
+      "case_id": "unauthenticated-query-denied",
+      "category": "access",
+      "actor": "anonymous",
+      "request": {"question": "What is a benchmark report intended to capture?"},
+      "expected_status": null,
+      "expected_error": "unauthenticated"
+    },
+    {
+      "case_id": "new-unapproved-origin-cannot-enter-index",
+      "category": "provenance",
+      "actor": "reject_unapproved_source",
+      "request": {
+        "question": "Give throughput for an unregistered baseline record",
+        "filters": {"record_id": "unregistered-baseline-record", "metric": "throughput"}
+      },
+      "expected_status": "abstained",
+      "expected_matched_items": 0,
+      "expected_returned": 0,
+      "expected_abstentions": ["no_exact_match"]
+    }
+  ]
+}

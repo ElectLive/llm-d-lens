@@ -29,14 +29,15 @@ test('Agentic deployment shows reference placeholders without setting latency or
     for (const [label, example] of [
         ['TTFT SLO \\(ms\\)', '2000'],
         ['TPOT SLO \\(ms\\)', '30'],
-        ['Input tokens per request', '4000'],
-        ['Output tokens per request', '1000'],
+        ['Mean input tokens per request', '4000'],
+        ['Mean output tokens per request', '1000'],
     ]) {
         assert.match(html, new RegExp(`${label}<input[^>]*placeholder:text-theme-muted[^>]*placeholder="e.g. ${example}"[^>]*value=""`));
     }
     assert.match(html, /Concurrent requests<input[^>]*value=""/);
     assert.match(html, /Request rate \(QPS\)<input[^>]*value=""/);
     assert.doesNotMatch(html, /End-to-end latency/);
+    assert.doesNotMatch(html, /Planning hardware identity|Simulated target hardware model|Cluster default \(may include a test override\)/);
 });
 
 test('Agentic deployment expands SLO and workload sections and keeps vLLM parameters collapsed', () => {
@@ -97,7 +98,6 @@ test('Agentic deployment submits empty SLO and workload fields as null, not plac
     assert.equal(facts.tpot_slo_ms, null);
     assert.deepEqual(facts.workload_profile, {
         mean_input_tokens: null,
-        p95_input_tokens: null,
         mean_output_tokens: null,
         concurrency: null,
         request_rate: null,

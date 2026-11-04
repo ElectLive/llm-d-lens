@@ -15,6 +15,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+from llm_d_lens.infrastructure.hostos import current_host
+
 from .paths import storage_path
 
 _PATH_FIELDS = frozenset(
@@ -201,7 +203,10 @@ def migrate_tree(source: Path, target: Path, *, mappings=(), apply=False, exclud
             temporary = destination.with_name(f".{destination.name}.{uuid4()}.tmp")
             try:
                 with temporary.open("xb") as output:
-                    os.chmod(temporary, 0o700 if original.stat().st_mode & 0o111 else 0o600)
+                    if original.stat().st_mode & 0o111:
+                        current_host().make_executable(temporary, private=True)
+                    else:
+                        current_host().restrict_to_owner(temporary)
                     if rewritten is not None:
                         output.write(rewritten)
                     else:
@@ -274,7 +279,7 @@ def _write_record(path: Path, payload: dict) -> None:
     temporary = path.with_name(f".{path.name}.{uuid4()}.tmp")
     try:
         with temporary.open("x", encoding="utf-8") as stream:
-            temporary.chmod(0o600)
+            current_host().restrict_to_owner(temporary)
             stream.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -345,7 +350,7 @@ def reindex_artifacts(*, apply: bool = False) -> dict:
                 temporary = folder / f".{name}.{uuid4()}.tmp"
                 try:
                     with temporary.open("xb") as stream:
-                        temporary.chmod(0o600)
+                        current_host().restrict_to_owner(temporary)
                         stream.write(content)
                         stream.flush()
                         os.fsync(stream.fileno())

@@ -93,6 +93,9 @@ addopts = "--import-mode=importlib"
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+# hostos ships to system Python 3.10 in the online installer, while the rest of
+# the backend stays on Python 3.11.
+per-file-target-version = { "src/llm_d_lens/infrastructure/hostos/**/*.py" = "py310", "tests/unit/infrastructure/hostos/**/*.py" = "py310" }
 
 [tool.ruff.lint]
 select = [

@@ -6,13 +6,16 @@ import json
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+from pydantic import TypeAdapter
+
 from llm_d_lens.ai_providers.client import AIRequestRecord, capture_ai_requests
+from llm_d_lens.infrastructure.hostos import current_host
 
 from .models import AgenticDeploymentRun
 from .planner import PlanningFacts
@@ -68,7 +71,7 @@ class PlanningSnapshotStore:
         temporary = destination.with_name(f".{destination.name}.{uuid4()}.tmp")
         try:
             with temporary.open("x", encoding="utf-8") as stream:
-                os.chmod(temporary, 0o600)
+                current_host().restrict_to_owner(temporary)
                 json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
                 stream.write("\n")
                 stream.flush()
@@ -94,7 +97,7 @@ class PlanningSnapshotStore:
             "event": event,
             "run_id": run.id,
             "request": request,
-            "resolved_planning_facts": asdict(facts),
+            "resolved_planning_facts": TypeAdapter(PlanningFacts).dump_python(facts, mode="json"),
             "cluster_snapshot": run.planning_cluster_snapshot,
             "planning_evidence": [evidence.model_dump(mode="json") for evidence in run.planning_evidence],
             "candidate_catalog": [candidate.model_dump(mode="json") for candidate in run.candidates],

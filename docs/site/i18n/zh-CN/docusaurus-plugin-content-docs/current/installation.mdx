@@ -76,7 +76,7 @@ Node.js 和软件包仓库，以及 Ubuntu 软件源；安装独立 Python 还�
 | `--db-mode embedded\|external` | 使用内置数据库或外部数据库。 |
 | `-h, --help` | 显示全部选项。 |
 
-启用自动 HTTPS 时，本地源码启动器还会为模型 Gateway 的内部 `lens-authz` 链路启用不校验证书的 TLS（`LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE=1`），因为集群不信任自签名证书。这是开发便利选项，会关闭该链路的证书校验，网络攻击者可能冒充 authz 并伪造身份。只能用于可信网络。安全警告和关闭方法见[环境变量](/environment-variables)。
+启用自动 HTTPS 时，安装器生成的 `lensctl.sh` 与本地源码启动器还会为模型 Gateway 的内部 `lens-authz` 链路启用不校验证书的 TLS（`LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE=1`），因为集群不信任自签名证书。这是开发便利选项，会关闭该链路的证书校验，网络攻击者可能冒充 authz 并伪造身份。只能用于可信网络。安全警告和关闭方法见[环境变量](/environment-variables)。
 
 ## 管理安装
 

@@ -240,7 +240,7 @@ export default function ModelMarketPage({ onNavigate, isActive = true }) {
         if (!isActive) return undefined;
         setCacheReady(false);
         setCacheCheckError('');
-        if (!selected?.repository || !cluster || !storageVolumeId) {
+        if (mode === 'agentic' || !selected?.repository || !cluster || !storageVolumeId) {
             setCacheCheckLoading(false);
             return undefined;
         }
@@ -266,7 +266,7 @@ export default function ModelMarketPage({ onNavigate, isActive = true }) {
                 if (!cancelled) setCacheCheckLoading(false);
             });
         return () => { cancelled = true; };
-    }, [selected?.repository, cluster, storageVolumeId, isActive]);
+    }, [selected?.repository, cluster, storageVolumeId, isActive, mode]);
 
     useEffect(() => {
         if (selected && hardware) {
@@ -334,7 +334,7 @@ export default function ModelMarketPage({ onNavigate, isActive = true }) {
             setError('Select a model cache storage for Standard or Agentic deployment, or choose Advanced to configure another model source.');
             return;
         }
-        if (requiresModelCache && !cacheReady) {
+        if (mode === 'standard' && !cacheReady) {
             setError('This model is not ready in the selected model cache storage. Ask an admin to download it before deploying.');
             return;
         }
@@ -448,7 +448,24 @@ export default function ModelMarketPage({ onNavigate, isActive = true }) {
                         <label className="text-sm text-slate-300 md:col-span-2">Description<textarea className="mt-2 min-h-24 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none transition placeholder:text-slate-600 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/10" value={deploymentDescription} onChange={(event) => setDeploymentDescription(event.target.value)} maxLength={1000} placeholder="Optional deployment description" /></label>
                         <label className="text-sm text-slate-300">Cluster<select className="mt-2 h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-slate-200" value={cluster} onChange={(event) => setCluster(event.target.value)} required><option value="">Select cluster</option>{clusters.map((item) => <option key={item.id} value={item.id} disabled={!item.ready}>{item.name}{item.ready ? '' : ' (not ready)'}</option>)}</select></label>
                         {mode !== 'agentic' && <><label className="order-3 text-sm text-slate-300">Replicas<input className="mt-2 h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-slate-200" type="number" min="1" max="32" value={replicas} onChange={(event) => setReplicas(Number(event.target.value))} /></label><label className="order-3 text-sm text-slate-300">Tensor parallelism<input className="mt-2 h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-slate-200" type="number" min="1" max="32" value={tensorParallelism} onChange={(event) => setTensorParallelism(Number(event.target.value))} /></label></>}
-                        <label className="order-2 md:col-span-2 text-sm text-slate-300">Model cache storage <span className="text-xs text-slate-500">{requiresModelCache ? 'Required for Agentic' : 'Optional for Manual'}</span><p className="mt-1 text-xs leading-5 text-slate-500">Select a registered hostPath or NFS volume containing downloaded model weights. This is not the Tiered Prefix Cache KV filesystem.</p><StorageVolumeSelect clearable className="mt-2" value={storageVolumeId} onChange={setStorageVolumeId} volumes={modelCacheVolumes} loading={storageLoading} disabled={!cluster} placeholder={requiresModelCache ? 'Select registered model storage' : 'No model storage selected'} emptyLabel={storageLoading ? 'Loading model cache storage...' : 'No ready model-cache storage'} optionDetail={(volume) => volume.capacity || volume.kind} /><div className="mt-2 flex gap-3">{storageVolumeId && <button type="button" onClick={() => setStorageVolumeId('')} className="text-xs text-slate-400 underline hover:text-cyan-300">Clear selection</button>}<button type="button" onClick={() => onNavigate('model-cache', { downloadModel: { clusterId: cluster, repoId: selected.repository, storageVolumeId } })} className="text-xs text-cyan-300 underline">Manage model cache</button></div>{!storageLoading && cluster && modelCacheVolumes.length === 0 && <p role="alert" className="mt-2 text-xs text-amber-300">No registered model-cache volume exists. Register a Model Cache volume in Storage before downloading this model.</p>}{storageVolumeId && cacheCheckLoading && <p className="mt-2 text-xs text-slate-500">Checking whether this model is cached...</p>}{storageVolumeId && cacheCheckError && <p role="alert" className="mt-2 text-xs text-rose-300">{cacheCheckError}</p>}{storageVolumeId && !cacheCheckLoading && !cacheCheckError && !cacheReady && <p role="alert" className="mt-2 text-xs text-amber-300">This model is not downloaded in the selected storage. Clear it or download the model there first.</p>}{storageVolumeId && !cacheCheckLoading && cacheReady && <p className="mt-2 text-xs text-emerald-300">This model is ready in the selected cache.</p>}</label>
+                        <label className="order-2 md:col-span-2 text-sm text-slate-300">
+                            Model cache storage <span className="text-xs text-slate-500">{requiresModelCache ? 'Required for Agentic' : 'Optional for Manual'}</span>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">Select a registered hostPath or NFS volume for model weights. This is not the Tiered Prefix Cache KV filesystem.</p>
+                            <StorageVolumeSelect clearable className="mt-2" value={storageVolumeId} onChange={setStorageVolumeId} volumes={modelCacheVolumes} loading={storageLoading} disabled={!cluster} placeholder={requiresModelCache ? 'Select registered model storage' : 'No model storage selected'} emptyLabel={storageLoading ? 'Loading model cache storage...' : 'No ready model-cache storage'} optionDetail={(volume) => volume.capacity || volume.kind} />
+                            <div className="mt-2 flex gap-3">
+                                {storageVolumeId && <button type="button" onClick={() => setStorageVolumeId('')} className="text-xs text-slate-400 underline hover:text-cyan-300">Clear selection</button>}
+                                <button type="button" onClick={() => onNavigate('model-cache', { downloadModel: { clusterId: cluster, repoId: selected.repository, storageVolumeId } })} className="text-xs text-cyan-300 underline">Manage model cache</button>
+                            </div>
+                            {!storageLoading && cluster && modelCacheVolumes.length === 0 && <p role="alert" className="mt-2 text-xs text-amber-300">No registered model-cache volume exists. Register a Model Cache volume in Storage before downloading this model.</p>}
+                            {mode === 'agentic'
+                                ? <p className="mt-2 text-xs text-theme-muted">Agentic recommendations skip model download/readiness checks. The selected cache must contain the ready model before deployment approval.</p>
+                                : <>
+                                    {storageVolumeId && cacheCheckLoading && <p className="mt-2 text-xs text-slate-500">Checking whether this model is cached...</p>}
+                                    {storageVolumeId && cacheCheckError && <p role="alert" className="mt-2 text-xs text-rose-300">{cacheCheckError}</p>}
+                                    {storageVolumeId && !cacheCheckLoading && !cacheCheckError && !cacheReady && <p role="alert" className="mt-2 text-xs text-amber-300">This model is not downloaded in the selected storage. Clear it or download the model there first.</p>}
+                                    {storageVolumeId && !cacheCheckLoading && cacheReady && <p className="mt-2 text-xs text-emerald-300">This model is ready in the selected cache.</p>}
+                                </>}
+                        </label>
                     </div>
                     {!selected.vllmSupported && <p role="alert" className="mt-5 text-sm text-amber-300">{selected.type} requires the {selected.runtime} runtime. Raw vLLM Standard deployment is unavailable until this provider is added.</p>}
                     {mode === 'standard' && topologyError && <p role="alert" className="mt-5 text-sm text-amber-300">{topologyError} The recommended TP remains TP {plan.tensorParallelism}; modify replicas or TP before creating this deployment.</p>}

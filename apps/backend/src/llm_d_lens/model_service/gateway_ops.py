@@ -23,7 +23,7 @@ import httpx
 import yaml
 
 from llm_d_lens.auth.service import default_service as default_auth_service
-from llm_d_lens.cluster.gateway_crds import apply_gateway_crds
+from llm_d_lens.cluster.gateway_crds import apply_gateway_crds, invalidate_cluster_discovery_cache
 from llm_d_lens.cluster.registry import gateway_lock, gateway_namespace_for, get_cluster, update_cluster
 from llm_d_lens.db.dao.model_service_gateway_operation import GatewayOperationDao
 from llm_d_lens.db.dao.model_service_group import ModelServiceGroupDao
@@ -87,6 +87,8 @@ DEFAULT_GATEWAY_NAME = "lens-inference-gateway"
 DEFAULT_IPP_NAME = "lens-ipp"
 #: IPP gRPC (ext_proc) port the gateway connects to.
 IPP_GRPC_PORT = 9004
+#: Pod-template annotation recording the InferenceModelRewrite CRD an EPP started with.
+REWRITE_CRD_ANNOTATION = "lens.llm-d.ai/rewrite-crd"
 
 
 def resolve_authz_endpoint(value: str | None) -> tuple[str | None, int | None]:
@@ -225,6 +227,12 @@ def _kubectl_object(stdout: str) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _stale_discovery_failure(result) -> bool:
+    """True when kubectl refused to map a kind from its stale discovery cache."""
+    output = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
+    return "no matches for kind" in output or "ensure crds are installed first" in output
+
+
 class GatewayOpsService:
     def __init__(
         self,
@@ -288,6 +296,15 @@ class GatewayOpsService:
 
     async def _kubectl(self, cluster_id: str, args: list[str], *, input: str | None = None, timeout: float = 60):  # noqa: A002
         return await self._run(cluster_id, ["kubectl", *args], input=input, timeout=timeout)
+
+    async def _apply_documents(self, cluster_id: str, documents: list[str]):
+        """Apply YAML documents, retrying once after dropping stale discovery."""
+        manifest = "---\n".join(documents)
+        applied = await self._kubectl(cluster_id, ["apply", "-f", "-"], input=manifest, timeout=120)
+        if applied.returncode != 0 and _stale_discovery_failure(applied):
+            invalidate_cluster_discovery_cache(cluster_id)
+            applied = await self._kubectl(cluster_id, ["apply", "-f", "-"], input=manifest, timeout=120)
+        return applied
 
     async def _existing_gateway_service_type(
         self, cluster_id: str, namespace: str, name: str, provider: str
@@ -538,6 +555,94 @@ class GatewayOpsService:
             )
             if deleted.returncode != 0:
                 raise GatewayOpsError(deleted.stderr or f"cannot remove model rewrite {name}")
+
+    async def _router_workload(
+        self, cluster_id: str, namespace: str, name: str
+    ) -> tuple[tuple[str, str, dict] | None, str]:
+        """Resolve an EPP's Deployment (fallback StatefulSet) and its pod annotations.
+
+        Returns ``((kind, name, annotations), "")`` on success and
+        ``(None, error)`` with the accumulated lookup failures otherwise, so
+        callers can report a real kubectl/parse error instead of "not found".
+        """
+        errors: list[str] = []
+        for kind in ("deploy", "statefulset"):
+            try:
+                result = await self._kubectl(cluster_id, ["get", kind, name, "-n", namespace, "-o", "json"], timeout=20)
+            except (FileNotFoundError, TimeoutError, OSError) as error:
+                errors.append(f"{kind}/{name}: {error}")
+                continue
+            if result.returncode != 0:
+                errors.append(f"{kind}/{name}: {(result.stderr or 'lookup failed').strip()}")
+                continue
+            try:
+                payload = _kubectl_object(result.stdout or "")
+            except ValueError as error:
+                errors.append(f"{kind}/{name}: invalid JSON: {error}")
+                continue
+            if payload is None:
+                errors.append(f"{kind}/{name}: empty response")
+                continue
+            annotations = (((payload.get("spec") or {}).get("template") or {}).get("metadata") or {}).get(
+                "annotations"
+            ) or {}
+            return (kind, name, annotations), ""
+        if errors and all("not found" in error.lower() for error in errors):
+            return None, f"workload not found ({'; '.join(errors)})"
+        return None, "; ".join(errors) or "workload not found"
+
+    async def repair_router_rewrites(self, cluster_id: str) -> dict:
+        """Restart Lens-managed EPPs whose pod template lacks the current router CRD marker.
+
+        The EPP registers the InferenceModelRewrite GVK only at startup. Each
+        workload's pod template carries a marker of the CRD UID/generation;
+        patching that marker rolls the EPP exactly once, and a matching marker
+        means no repeat while the replacement pods are still starting.
+        """
+        try:
+            crd = await self._kubectl(
+                cluster_id,
+                ["get", "crd", INFERENCE_MODEL_REWRITE_CRD, "-o", "jsonpath={.metadata.uid}/{.metadata.generation}"],
+                timeout=20,
+            )
+        except (FileNotFoundError, TimeoutError, OSError) as error:
+            return {"ok": False, "restarted": [], "message": f"could not read {INFERENCE_MODEL_REWRITE_CRD}: {error}"}
+        marker = (crd.stdout or "").strip() if crd.returncode == 0 else ""
+        if not marker:
+            message = (crd.stderr or "").strip() or f"{INFERENCE_MODEL_REWRITE_CRD} is not installed"
+            return {"ok": False, "restarted": [], "message": message[:500]}
+        restarted: list[str] = []
+        failures: list[str] = []
+        seen: set[tuple[str, str]] = set()
+        for member in self.members.list_by_cluster(cluster_id):
+            if member.endpoint_kind != "llm-d-epp" or not member.epp_ref:
+                continue
+            key = (member.target_namespace, member.epp_ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            workload, error = await self._router_workload(cluster_id, member.target_namespace, member.epp_ref)
+            if workload is None:
+                failures.append(f"{member.target_namespace}/{member.epp_ref}: {error}")
+                continue
+            kind, name, annotations = workload
+            if annotations.get(REWRITE_CRD_ANNOTATION) == marker:
+                continue
+            patch = json.dumps({"spec": {"template": {"metadata": {"annotations": {REWRITE_CRD_ANNOTATION: marker}}}}})
+            try:
+                result = await self._kubectl(
+                    cluster_id,
+                    ["patch", kind, name, "-n", member.target_namespace, "--type=merge", "-p", patch],
+                    timeout=30,
+                )
+            except (FileNotFoundError, TimeoutError, OSError) as error:
+                failures.append(f"{kind}/{name}: {error}")
+                continue
+            if result.returncode != 0:
+                failures.append(f"{kind}/{name}: {(result.stderr or 'patch failed').strip()}")
+                continue
+            restarted.append(f"{kind}/{name}")
+        return {"ok": not failures, "restarted": restarted, "message": "; ".join(failures)[:500]}
 
     async def _managed_route_names(self, cluster_id: str, namespace: str) -> set[str]:
         """HTTPRoute names Lens manages in a cluster's Gateway namespace."""
@@ -1584,9 +1689,7 @@ class GatewayOpsService:
                     )
         if documents:
             try:
-                applied = await self._kubectl(
-                    cluster_id, ["apply", "-f", "-"], input="---\n".join(documents), timeout=120
-                )
+                applied = await self._apply_documents(cluster_id, documents)
             except (FileNotFoundError, TimeoutError, OSError) as error:
                 return self._finish(operation, ok=False, message=f"kubectl unavailable: {error}")
             if applied.returncode != 0:
@@ -1600,9 +1703,7 @@ class GatewayOpsService:
             )
         if rewrite_documents:
             try:
-                applied = await self._kubectl(
-                    cluster_id, ["apply", "-f", "-"], input="---\n".join(rewrite_documents), timeout=120
-                )
+                applied = await self._apply_documents(cluster_id, rewrite_documents)
             except (FileNotFoundError, TimeoutError, OSError) as error:
                 return self._finish(operation, ok=False, message=f"kubectl unavailable: {error}")
             if applied.returncode != 0:

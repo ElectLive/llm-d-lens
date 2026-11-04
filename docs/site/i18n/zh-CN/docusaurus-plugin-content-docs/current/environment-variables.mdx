@@ -46,7 +46,7 @@ shell/Compose/Helm values 中导出它们。大多数变量在本地开发环境
 | `LENS_WELCOME_CHECK_INTERVAL_SECONDS` | Lens 刷新并保存欢迎页问题快照的间隔。设为 `0` 可禁用后台检查。 | `60` |
 | `LENS_MODEL_GATEWAY_AUTHZ_HOST` | 当某个集群未设置自己的**Lens authz 地址**时，作为后备使用的 Lens ext_authz 地址。优先使用按集群配置的值（创建/编辑集群表单 → `GET /api/cluster/lens-hosts`）。设置后，Gateway 会注入调用方身份（`x-llm-d-inference-fairness-id`）以支持按用户统计用量。 | *(未设置)* |
 | `LENS_MODEL_GATEWAY_AUTHZ_PORT` | Gateway 使用的 Lens ext_authz 后端端口。 | `8081` |
-| `LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE` | 让 Istio 共享 Gateway 向 `lens-authz` Service 发起 TLS，但**跳过证书校验**。仅在 Lens 通过 HTTPS 提供 authz、且 Istio 无法验证该证书（例如本地自签名证书）时需要。**安全警告：** 这会让链路上的攻击者冒充 authz 服务、伪造授权结果并注入身份头；只能用于可信的本地/开发网络，绝不能用于生产。关闭该开关时，Lens 会删除这个不校验证书的 DestinationRule。本地 HTTPS 启动器会自动启用。只有在 authz 使用纯 HTTP，或集群信任该证书时才应关闭；否则 authz 会 fail closed。 | 未设置（本地 HTTPS 时为 `1`） |
+| `LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE` | 让 Istio 共享 Gateway 向 `lens-authz` Service 发起 TLS，但**跳过证书校验**。仅在 Lens 通过 HTTPS 提供 authz、且 Istio 无法验证该证书（例如本地自签名证书）时需要。**安全警告：** 这会让链路上的攻击者冒充 authz 服务、伪造授权结果并注入身份头；只能用于可信的本地/开发网络，绝不能用于生产。关闭该开关时，Lens 会删除这个不校验证书的 DestinationRule。`hack/lens-local.sh` 与安装器生成的 `lensctl.sh` 在通过 HTTPS 提供服务时会自动启用。只有在 authz 使用纯 HTTP，或集群信任该证书时才应关闭；否则 authz 会 fail closed。 | 未设置（自动 HTTPS 时为 `1`） |
 
 Inference Payload Processor 的 Helm chart 和版本无法通过环境变量配置——它们
 是 `llm_d_lens/versions/__init__.py` 中固定的常量

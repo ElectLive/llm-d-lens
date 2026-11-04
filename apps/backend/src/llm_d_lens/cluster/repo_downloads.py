@@ -15,7 +15,6 @@ publication across concurrent requests and processes.
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import hashlib
 import logging
 import re
@@ -25,6 +24,7 @@ from tempfile import TemporaryDirectory
 from threading import Lock
 from typing import Literal
 
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.process import run_sync
 from llm_d_lens.infrastructure.storage.paths import storage_path
 
@@ -67,7 +67,7 @@ def _download_snapshot(repo: RepoName, ref: str) -> Path:
     root = destination.parent
     root.mkdir(parents=True, exist_ok=True)
     with (root / "download.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        current_host().try_lock(lock)
         if _COMMIT.fullmatch(ref) and (destination / ".git").is_dir():
             return destination
         mirror = root / "mirror.git"
@@ -89,6 +89,14 @@ def _download_snapshot(repo: RepoName, ref: str) -> Path:
                 _git("-C", str(staging), "checkout", "--quiet", "--detach", commit)
                 staging.rename(destination)
         return destination
+
+
+def download_snapshot(repo: RepoName, ref: str) -> Path:
+    """Fetch a source snapshot synchronously using the shared managed cache."""
+    ref = ref.strip()
+    if not ref or ref.startswith("-"):
+        raise ValueError("A nonempty Git ref is required")
+    return _download_snapshot(repo, ref)
 
 
 @dataclass
@@ -126,9 +134,7 @@ async def ensure_downloaded(cluster_id: str, repo: RepoName, ref: str) -> Path:
     ref = ref.strip()
     _set_status(cluster_id, repo, ref=ref, state="downloading", path=None, error=None)
     try:
-        if not ref or ref.startswith("-"):
-            raise ValueError("A nonempty Git ref is required")
-        dest = await asyncio.to_thread(_download_snapshot, repo, ref)
+        dest = await asyncio.to_thread(download_snapshot, repo, ref)
     except Exception as error:
         logger.exception("event=repo_download_failed repo=%s ref=%s cluster_id=%s", repo, ref, cluster_id)
         _set_status(cluster_id, repo, ref=ref, state="failed", path=None, error=str(error))

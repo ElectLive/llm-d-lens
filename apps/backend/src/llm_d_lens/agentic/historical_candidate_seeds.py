@@ -9,13 +9,9 @@ from math import log2
 from .benchmark_evidence import (
     BenchmarkEvidenceRetriever,
     BenchmarkQuery,
+    BenchmarkRecord,
     CandidateConfiguration,
-    HardwareDescriptor,
-    ModelDescriptor,
-    RuntimeFingerprint,
-)
-from .benchmark_evidence import (
-    WorkloadProfile as BenchmarkWorkloadProfile,
+    historical_query_context,
 )
 from .benchmark_store import JsonBenchmarkRecordStore
 from .generator import CandidateProposal
@@ -35,7 +31,14 @@ class HistoricalCandidateSeedRetriever:
         self._store = store or JsonBenchmarkRecordStore()
         self._retriever = BenchmarkEvidenceRetriever()
 
-    def retrieve(self, model_name: str, facts: PlanningFacts) -> tuple[HistoricalCandidateSeed, ...]:
+    def retrieve(
+        self,
+        model_name: str,
+        facts: PlanningFacts,
+        *,
+        records: list[BenchmarkRecord] | None = None,
+    ) -> tuple[HistoricalCandidateSeed, ...]:
+        """Use caller-authorized records when supplied, including an empty authorized result."""
         if facts.workload_profile is None:
             return ()
         query = self._query(
@@ -47,7 +50,8 @@ class HistoricalCandidateSeedRetriever:
                 decode_replicas=1,
             ),
         )
-        records = self._store.find_seed_candidates(query, observed_after=self._minimum_timestamp())
+        if records is None:
+            records = self._store.find_seed_candidates(query, observed_after=self._minimum_timestamp())
         configurations = {
             self._configuration_key(record.configuration): record.configuration
             for record in records
@@ -92,36 +96,8 @@ class HistoricalCandidateSeedRetriever:
         facts: PlanningFacts,
         candidate: CandidateConfiguration,
     ) -> BenchmarkQuery:
-        profile = facts.workload_profile
-        assert profile is not None
         return BenchmarkQuery(
-            model=ModelDescriptor(
-                model_id=model_name,
-                family=model_name.split("/")[0],
-                architecture="dense",
-                parameter_count_b=max(facts.model_weight_gib / 2, 0.1),
-                quantization="unknown",
-                tokenizer_id=model_name,
-            ),
-            hardware=HardwareDescriptor(
-                accelerator="cluster",
-                vram_per_gpu_gib=facts.vram_per_gpu_gib,
-                gpu_count=max(facts.free_gpu_count, 1),
-            ),
-            runtime=RuntimeFingerprint(
-                backend="vllm",
-                backend_version="unknown",
-                accelerator_runtime="unknown",
-            ),
-            workload=BenchmarkWorkloadProfile(
-                mean_input_tokens=profile.mean_input_tokens or facts.context_length,
-                p95_input_tokens=profile.p95_input_tokens or profile.mean_input_tokens or facts.context_length,
-                mean_output_tokens=profile.mean_output_tokens or 256,
-                concurrency=profile.concurrency or 1,
-                request_rate=profile.request_rate or 1,
-                shared_prefix_ratio=profile.shared_prefix_ratio or 0,
-                prefill_fraction=1.0 if facts.prefill_heavy else 0.0,
-            ),
+            **historical_query_context(model_name, facts),
             candidate=candidate,
         )
 

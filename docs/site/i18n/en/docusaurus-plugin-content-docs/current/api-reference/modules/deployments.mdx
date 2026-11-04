@@ -228,6 +228,15 @@ candidate generation and scoring with the new preference. If an available AI
 scorer fails, recalculation keeps the validated candidates and returns
 deterministically scored alternatives instead.
 
+Refinement replaces the current plan only after evidence access is rechecked and
+the new audit snapshot is saved. A failed refinement preserves the previous plan;
+if the plan changes while recalculation or approval is in progress, reload it
+before retrying. Selecting an alternative updates the decision's SLO status and
+evidence to that candidate without rewriting the earlier audit snapshot.
+Approval leaves `awaiting_approval` before submitting to Deploy, so the same plan
+cannot be submitted twice. An interrupted or failed submission marks the Agentic
+run `failed`; inspect deployment runs before creating a replacement plan.
+
 Agentic candidate planning and approval revalidation use the deployment request's
 `max_model_len` and `gpu_memory_utilization` for memory and KV-cache checks, even
 when the supplied `planning_facts` contains different values. Deterministic and
@@ -235,6 +244,66 @@ AI-generated candidates use the same utilization as the deployed configuration.
 PD deployments apply that utilization to both prefill and decode vLLM roles.
 The estimate uses GPU capacity and model overhead, not vLLM's measured free KV
 cache at startup.
+
+### Multi-source evidence in Agentic plans
+
+`AgenticDeploymentService.create()` and `.refine()` resolve evidence using the
+actual request principal. REST and streaming calls retain that identity.
+Public Prism observations use exact model/live hardware filters and require global
+`benchmark-rag:query:read`; internal experiments retain their resource authorization.
+Client-supplied public observations and cases are not trusted.
+Plans containing public observations keep the same read-permission requirement.
+
+Each `create()` or `refine()` call shares one request-local hardware discovery
+snapshot between planning facts and public evidence retrieval. Later calls and
+deployment approval discover resources afresh. Accelerator identity and usable
+VRAM come only from live automatic discovery; test-only hardware and VRAM
+environment overrides are no longer supported. Missing usable VRAM stops
+planning rather than substituting a simulated capacity. Previously created
+simulation plans remain blocked from deployment. Historical matching uses the
+deployment runtime's serving backend. Public records with a missing, blank or
+`unknown` backend default to `vllm` in SQL matching and returned experiment/case
+context; explicit other backends are not reclassified. Stored records and original
+source evidence are unchanged; unknown runtime versions remain unknown.
+TPOT prompt targets accept `ms/token` and `s/token`, normalized to milliseconds.
+
+Benchmark comparisons treat equivalent decimal workload values numerically,
+recognize `latency`/`e2e` as end-to-end latency aliases and normalize fractional
+percentiles such as `p99p9`/`p99.9`. Original source evidence is retained.
+
+The server normalizes explicit workload and latency requirements, aggregates
+experiments by configuration and series before limiting each SQL branch to 50
+cases, then selects at most 10 complete cases within a 16,000-byte evidence budget.
+Explicit workload fit precedes comparable lower latency; no workload means no
+workload penalty. Missing measurements remain unknown. Different statistics and
+experiments are not combined to manufacture an SLO result. Cases without comparable
+workload or valid latency are explicitly labelled fallback references.
+All requested latency metrics must be available with the requested statistics
+before a candidate can receive an SLO conclusion. Missing metrics remain
+`unknown`, not satisfied or failed. TTFT/TPOT evidence alone cannot establish
+an end-to-end latency target, so such a plan retains `unknown` SLO status.
+
+`planning_evidence` keeps public retrieval under `id="public-rag:query"`, including
+available, no-match, forbidden and unavailable outcomes. Configuration-case details
+retain source conditions, differences, unknowns, branch status and truncation.
+Candidate explanations and server-side audit retain their evidence boundaries:
+historical measurements are not proof of current performance, and AIC is an estimate.
+
+Planning uses public and internal SQL experiments, without a document retrieval
+branch, embedding/vector search or document packet contracts. Model prompts name
+these sources published benchmark evidence and internal benchmark history and
+instruct decision explanations to use those terms. Standalone public observations use the model-context key
+`published_benchmark_evidence`; an empty context means no evidence was supplied for
+that request, not that the databases contain no data.
+The stored `public_rag_evidence` field, `public-rag:query` evidence ID and
+`benchmark-rag:query:read` permission remain legacy compatibility identifiers, not
+claims of document retrieval capability. The existing private diagnostic adapter
+is unaffected.
+
+Creation validates the registered model-cache storage volume without requiring
+downloaded model files. Refinement likewise skips download-readiness checks.
+Approval requires a ready cached model, resolves its current credential policy,
+refreshes resource validation and requires explicit user approval.
 
 Deployments live under the FastAPI router in `llm_d_lens/deploy/router.py` with the `/api/v1/deployments` prefix.
 

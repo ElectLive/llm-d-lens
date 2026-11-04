@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download a pinned Lens source tree and install it on Ubuntu.
+# Download a pinned Lens source tree and install it on a supported host.
 # Parse the complete body before execution, including when streamed into Bash.
 {
 set -euo pipefail
@@ -10,14 +10,21 @@ REPOSITORY="llm-d-incubation/llm-d-lens"
 PIPE_ENTRY=0
 [[ -n "${BASH_SOURCE[0]:-}" ]] || PIPE_ENTRY=1
 
+# ---- Host OS header ----------------------------------------------------------
+# The only per-OS part of this installer; every other step calls hostos.
+INSTALLER_OS_ID="ubuntu"
+INSTALLER_FILE_NAME="LensInstaller-Ubuntu-x86_64-online.sh"
+INSTALLER_DISPLAY_NAME="Ubuntu 22.04+ (x86_64)"
+INSTALLER_PREREQ_HINT="sudo apt-get install curl ca-certificates python3"
+
 online_fail() { printf '[lens-online] %s\n' "$*" >&2; exit 1; }
 
 online_help() {
     cat <<EOF
-Lens online installer for Ubuntu 22.04+ (x86_64)
+Lens online installer for $INSTALLER_DISPLAY_NAME
 Source: $LENS_SOURCE_VERSION
 
-Usage: bash LensInstaller-Ubuntu-x86_64-online.sh [options]
+Usage: bash $INSTALLER_FILE_NAME [options]
   --silent, -y          Install without prompts.
   --install-dir DIR     New install directory (default: \$HOME/llm-d-lens).
   --app-port PORT       Web app/API port (default: 3000).
@@ -40,7 +47,7 @@ Usage: bash LensInstaller-Ubuntu-x86_64-online.sh [options]
 
 The downloaded script selects the version; there is no version override.
 Fresh installs only. Use the installed lensctl.sh for management/uninstall.
-Run as the intended service user; sudo is used only for missing apt packages.
+Run as the intended service user; sudo is used only when installing missing system packages.
 Piped installs read prompts from /dev/tty and, after source validation, save a
 uniquely named installer copy in the current directory.
 For automation, pipe to: bash -s -- --silent [options]
@@ -49,6 +56,25 @@ Maintainers only (edit/check this script, without installing):
   release stamp VERSION   Embed main or a vMAJOR.MINOR.PATCH release tag.
   release check VERSION   Verify the embedded version matches the branch/tag.
 EOF
+}
+
+# Stage 1 has only the extracted source archive, not an installed virtualenv.
+ONLINE_ARCHIVE_ROOT=""
+online_hostos_exec() {
+    PYTHONPATH="$ONLINE_ARCHIVE_ROOT/apps/backend/src" \
+        python3 -m llm_d_lens.infrastructure.hostos "$@"
+}
+
+# online_hostos <args...> — run hostos and return 0/1. Exit >= 2 means a
+# usage/internal error: print it and abort instead of misreading it.
+online_hostos() {
+    local rc=0
+    online_hostos_exec "$@" || rc=$?
+    if (( rc >= 2 )); then
+        fail "hostos command failed (exit $rc)"
+        exit 1
+    fi
+    return "$rc"
 }
 
 online_main() {
@@ -82,14 +108,8 @@ online_main() {
     done
     [[ "$LENS_SOURCE_VERSION" == main || "$LENS_SOURCE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] ||
         online_fail "Invalid embedded source version."
-    [[ -f /etc/os-release ]] || online_fail "Ubuntu 22.04+ is required."
-    # shellcheck disable=SC1091
-    source /etc/os-release
-    [[ "${ID:-}" == ubuntu && "$(printf '%s\n' 22.04 "${VERSION_ID:-0}" | sort -V | head -n1)" == 22.04 ]] ||
-        online_fail "Ubuntu 22.04+ is required."
-    [[ "$(uname -m)" == x86_64 ]] || online_fail "Only x86_64 is supported."
     command -v python3 >/dev/null ||
-        online_fail "Missing python3. Install prerequisites with: sudo apt-get install curl ca-certificates python3"
+        online_fail "Missing python3. Install prerequisites with: $INSTALLER_PREREQ_HINT"
     command -v curl >/dev/null || command -v wget >/dev/null ||
         online_fail "Install curl or wget before running the online installer."
     if [[ "$silent" == 0 ]]; then
@@ -141,12 +161,12 @@ PY
     printf '[lens-online] Resolved %s to %s\n' "$LENS_SOURCE_VERSION" "$sha" | tee -a "$LOG_FILE"
     download "https://codeload.github.com/$REPOSITORY/tar.gz/$sha" "$WORK_DIR/source.tar.gz"
     archive_root="$WORK_DIR/llm-d-lens-$sha"
-    python3 - "$WORK_DIR/source.tar.gz" "$WORK_DIR" "llm-d-lens-$sha" <<'PY'
+    python3 - "$WORK_DIR/source.tar.gz" "$WORK_DIR" "llm-d-lens-$sha" "$INSTALLER_FILE_NAME" <<'PY'
 import pathlib
 import sys
 import tarfile
 
-archive, destination, root = sys.argv[1:]
+archive, destination, root, installer = sys.argv[1:]
 with tarfile.open(archive, "r:gz") as source:
     members = source.getmembers()
     seen = set()
@@ -158,7 +178,8 @@ with tarfile.open(archive, "r:gz") as source:
             sys.exit(f"Unsafe or unsupported source archive entry: {member.name}")
         seen.add(str(path))
     required = ("package.json", "apps/backend/pyproject.toml", "hack/storage-env.sh",
-                "scripts/LensInstaller-Ubuntu-x86_64-online.sh")
+                f"scripts/{installer}",
+                "apps/backend/src/llm_d_lens/infrastructure/hostos/__main__.py")
     for name in required:
         if not any(m.name == f"{root}/{name}" and m.isfile() for m in members):
             sys.exit(f"Source archive is missing {name}.")
@@ -168,17 +189,22 @@ with tarfile.open(archive, "r:gz") as source:
         target = pathlib.Path(destination, member.name)
         target.chmod(member.mode)
 PY
+    ONLINE_ARCHIVE_ROOT="$archive_root"
+    local host_check
+    if ! host_check="$(online_hostos check --installer "$INSTALLER_OS_ID" 2>&1)"; then
+        online_fail "$host_check"
+    fi
     if [[ "$PIPE_ENTRY" == 1 ]]; then
         local saved_script
-        saved_script="$(mktemp "$PWD/LensInstaller-Ubuntu-x86_64-online.XXXXXXXX.sh")"
-        if ! cp -- "$archive_root/scripts/LensInstaller-Ubuntu-x86_64-online.sh" "$saved_script"; then
+        saved_script="$(mktemp "$PWD/${INSTALLER_FILE_NAME%.sh}.XXXXXXXX.sh")"
+        if ! cp -- "$archive_root/scripts/$INSTALLER_FILE_NAME" "$saved_script"; then
             rm -f -- "$saved_script"
             online_fail "Could not save the installer in $PWD."
         fi
         printf '[lens-online] Installer saved: %s\n' "$saved_script" | tee -a "$LOG_FILE"
     fi
     # This internal mode fixes the chosen path and rechecks it before any writes.
-    if bash "$archive_root/scripts/LensInstaller-Ubuntu-x86_64-online.sh" \
+    if bash "$archive_root/scripts/$INSTALLER_FILE_NAME" \
         --install-source --fresh-install --install-dir "$install_dir" "${args[@]}" 2>&1 | tee -a "$LOG_FILE"; then
         python3 - "$install_dir" "$LENS_SOURCE_VERSION" "$sha" <<'PY'
 import datetime
@@ -314,7 +340,7 @@ print_logo() {
     done
     # A plain, understated bar beneath the wordmark — matching its two tones.
     printf '  %s▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇%s%s▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇%s\n' "$LOGO_GRAY" "$RESET" "$LOGO_PLUM" "$RESET"
-    printf '  %sLLM-D-LENS%s %sInstaller for Ubuntu (x86_64)%s\n\n' "$BOLD$WHITE" "$RESET" "$DIM" "$RESET"
+    printf '  %sLLM-D-LENS%s %sInstaller for %s%s\n\n' "$BOLD$WHITE" "$RESET" "$DIM" "$INSTALLER_DISPLAY_NAME" "$RESET"
 }
 
 # ---- Defaults / configuration -------------------------------------------------
@@ -324,7 +350,7 @@ INSTALL_DIR="${INSTALL_DIR:-$INSTALL_DIR_DEFAULT}"
 APP_PORT="${APP_PORT:-${BACKEND_PORT:-${SERVER_PORT:-3000}}}"
 BACKEND_PORT="$APP_PORT"
 START_AFTER_INSTALL=1
-ALLOW_APT=1
+ALLOW_SYSTEM_PACKAGES=1
 FRESH_INSTALL=0
 UNINSTALL=0
 UNINSTALL_ARGS=()
@@ -361,7 +387,6 @@ DB_EMBEDDED_PASSWORD_AUTOGEN=0
 NODE_MIN_MAJOR="${NODE_MIN_MAJOR:-22}"
 NODE_FALLBACK_VERSION="${NODE_FALLBACK_VERSION:-v22.23.2}"
 NODE_DIST_URL="${NODE_DIST_URL:-https://nodejs.org/dist}"
-UBUNTU_MIN_VERSION="22.04"
 PYTHON_BIN="${PYTHON_BIN:-}"
 UV_VERSION="0.13.0"
 
@@ -376,15 +401,15 @@ while [[ $# -gt 0 ]]; do
         --silent|-y)       SILENT=1; shift ;;
         --install-dir)     INSTALL_DIR="$2"; shift 2 ;;
         --install-dir=*)   INSTALL_DIR="${1#*=}"; shift ;;
-        --app-port)        APP_PORT="$2"; shift 2 ;;
-        --app-port=*)      APP_PORT="${1#*=}"; shift ;;
-        --backend-port)    APP_PORT="$2"; BACKEND_PORT="$APP_PORT"; shift 2 ;;
-        --backend-port=*)  APP_PORT="${1#*=}"; BACKEND_PORT="$APP_PORT"; shift ;;
+        --app-port)        require_valid_port "$2" "--app-port"; APP_PORT="$2"; shift 2 ;;
+        --app-port=*)      require_valid_port "${1#*=}" "--app-port"; APP_PORT="${1#*=}"; shift ;;
+        --backend-port)    require_valid_port "$2" "--backend-port"; APP_PORT="$2"; BACKEND_PORT="$APP_PORT"; shift 2 ;;
+        --backend-port=*)  require_valid_port "${1#*=}" "--backend-port"; APP_PORT="${1#*=}"; BACKEND_PORT="$APP_PORT"; shift ;;
         --no-https)        ENABLE_HTTPS=0; shift ;;
         --tls-host)        TLS_HOST="$2"; shift 2 ;;
         --tls-host=*)      TLS_HOST="${1#*=}"; shift ;;
         --no-start)         START_AFTER_INSTALL=0; shift ;;
-        --no-apt)           ALLOW_APT=0; shift ;;
+        --no-apt)           ALLOW_SYSTEM_PACKAGES=0; shift ;;
         --fresh-install)    FRESH_INSTALL=1; shift ;;
         --db-mode)          DB_MODE="$2"; shift 2 ;;
         --db-mode=*)        DB_MODE="${1#*=}"; shift ;;
@@ -414,94 +439,83 @@ done
 }
 
 # ---- Environment gates ---------------------------------------------------------
-require_ubuntu() {
-    if [[ ! -r /etc/os-release ]]; then
-        fail "cannot detect the OS (/etc/os-release missing) — this installer supports Ubuntu only."
-        exit 1
-    fi
-    # shellcheck disable=SC1091
-    source /etc/os-release
-    local id="${ID:-}" id_like="${ID_LIKE:-}" version="${VERSION_ID:-0}"
-    if [[ "$id" != "ubuntu" && "$id_like" != *ubuntu* ]]; then
-        fail "unsupported distribution: ${PRETTY_NAME:-$id} — this installer supports Ubuntu $UBUNTU_MIN_VERSION+."
-        exit 1
-    fi
-    if [[ "$(printf '%s\n%s\n' "$version" "$UBUNTU_MIN_VERSION" | sort -V | head -n1)" != "$UBUNTU_MIN_VERSION" ]]; then
-        fail "Ubuntu $version detected — this installer requires Ubuntu $UBUNTU_MIN_VERSION or newer."
-        exit 1
-    fi
-    ok "Ubuntu $version detected (${PRETTY_NAME:-})"
+# hostos_exec runs the host layer from the downloaded source tree with the
+# system python3. It is the low-level command tests can stub.
+hostos_exec() {
+    PYTHONPATH="$SOURCE_DIR/apps/backend/src" \
+        python3 -m llm_d_lens.infrastructure.hostos "$@"
 }
 
-require_arch() {
-    local arch
-    arch="$(uname -m)"
-    if [[ "$arch" != "x86_64" ]]; then
-        fail "architecture $arch detected — this installer is built for x86_64 only."
+# hostos <args...> — run hostos and return 0/1. Exit >= 2 means a usage or
+# internal error: print it and abort instead of misreading the result.
+hostos() {
+    local rc=0
+    hostos_exec "$@" || rc=$?
+    if (( rc >= 2 )); then
+        fail "hostos command failed (exit $rc)"
         exit 1
     fi
-    ok "architecture x86_64 detected"
+    return "$rc"
+}
+
+require_host_os() {
+    local message
+    if ! message="$(hostos check --installer "$INSTALLER_OS_ID")"; then
+        exit 1
+    fi
+    ok "$message"
 }
 
 # ---- Port conflict handling -------------------------------------------------------
+# Ports are passed to hostos as plain numbers, so validate user input first: a
+# typo must not reach argparse (which would abort the install with a usage error).
+is_valid_port() {
+    [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 ))
+}
+
+require_valid_port() {
+    local value="$1" label="$2"
+    if ! is_valid_port "$value"; then
+        fail "$label must be a port between 1 and 65535 (got '$value')."
+        exit 1
+    fi
+}
+
 # This host may be shared with other users/instances, so a chosen port
 # (default or explicitly requested) can already be bound by someone else.
+# Relies on an earlier `hostos check` gate: `port-in-use` exits 1 both when the port is free and when unsupported.
 port_in_use() {
-    local port="$1"
-    if command -v ss >/dev/null 2>&1; then
-        ss -H -ltn "( sport = :$port )" 2>/dev/null | grep -q .
-        return
-    fi
-    # ss not installed -- fall back to a raw connect probe.
-    (: < "/dev/tcp/127.0.0.1/$port") 2>/dev/null
+    hostos port-in-use -- "$1"
 }
 
 # find_free_port <start> -> echoes the first free port at or after <start>.
 find_free_port() {
-    local port="$1" tries=0
-    while port_in_use "$port"; do
-        port=$((port + 1))
-        tries=$((tries + 1))
-        if [[ $tries -ge 200 ]]; then
-            fail "could not find a free port at or after $1 (checked 200 ports)"
-            exit 1
-        fi
-    done
-    printf '%s\n' "$port"
+    hostos free-port -- "$1"
 }
 
 # describe_port_owner <port> -> best-effort "who's holding this port" string.
 # On this kind of shared host, the occupant is often another user's process,
-# whose PID/command `ss` won't reveal without root — say so plainly instead
+# whose PID/command won't be visible without root — say so plainly instead
 # of pretending we know, so the user isn't left guessing why a pick failed.
 describe_port_owner() {
-    local port="$1" line pid owner
-    line="$(ss -H -ltnp "( sport = :$port )" 2>/dev/null | head -1)"
-    if [[ -n "$line" ]]; then
-        if [[ "$line" =~ pid=([0-9]+) ]]; then
-            pid="${BASH_REMATCH[1]}"
-            owner="$(ps -o comm=,user= -p "$pid" 2>/dev/null)"
-            if [[ -n "$owner" ]]; then
-                printf '%s (pid %s)' "$owner" "$pid"
-                return 0
-            fi
-        fi
-        printf 'another process on this shared host (owner not visible without root)'
-        return 0
-    fi
-    printf 'an unknown process'
+    hostos port-owner -- "$1"
 }
 
 # ask_port <prompt> <default> -> like ask(), but loops until the chosen port
-# is actually free, suggesting the next free one as the new default each time
-# and explaining what's occupying the rejected port (not just "pick another").
+# is valid and actually free, suggesting the next free one as the new default
+# each time and explaining what's occupying the rejected port.
 ask_port() {
-    local prompt="$1" default="$2" port suggestion
+    local prompt="$1" default="$2" port suggestion owner
     while true; do
         port="$(ask "$prompt" "$default")"
+        if ! is_valid_port "$port"; then
+            warn "port '$port' is not valid; enter a port between 1 and 65535."
+            continue
+        fi
         if port_in_use "$port"; then
-            suggestion="$(find_free_port $((port + 1)))"
-            warn "port $port is already held by $(describe_port_owner "$port") — try $suggestion, or another port of your own choice."
+            owner="$(describe_port_owner "$port")" || exit 1
+            suggestion="$(find_free_port $((port + 1)))" || exit 1
+            warn "port $port is already held by $owner — try $suggestion, or another port of your own choice."
             default="$suggestion"
             continue
         fi
@@ -516,11 +530,13 @@ ask_port() {
 # (which process is occupying it, where discoverable) and surface which
 # ports actually ended up being used (see main()'s "silent mode" info line).
 resolve_ports_silently() {
-    local original
+    require_valid_port "$APP_PORT" "app port"
+    local original owner
     if port_in_use "$APP_PORT"; then
         original="$APP_PORT"
-        warn "app port $original is already held by $(describe_port_owner "$original")."
-        APP_PORT="$(find_free_port "$APP_PORT")"
+        owner="$(describe_port_owner "$original")" || exit 1
+        warn "app port $original is already held by $owner."
+        APP_PORT="$(find_free_port "$APP_PORT")" || exit 1
         warn "switched app port to $APP_PORT instead."
     fi
     BACKEND_PORT="$APP_PORT"
@@ -648,52 +664,39 @@ interactive_configure() {
 # ---- System package prerequisites ------------------------------------------------
 ensure_system_packages() {
     step "Checking system packages"
-    local need=()
-    for pkg_bin in "curl:curl" "tar:tar" "git:git" "python3:python3" "ss:iproute2" "openssl:openssl"; do
-        local bin="${pkg_bin%%:*}" pkg="${pkg_bin##*:}"
-        command -v "$bin" >/dev/null 2>&1 || need+=("$pkg")
-    done
-    # python3-venv is a separate Debian/Ubuntu package from python3 itself.
-    if ! dpkg-query -W -f='${Status}' python3-venv 2>/dev/null | grep -q 'install ok installed'; then
-        need+=("python3-venv" "python3-pip")
-    fi
-    command -v pip3 >/dev/null 2>&1 || need+=("python3-pip")
-    command -v rsync >/dev/null 2>&1 || need+=("rsync")
+    local output missing=() package
+    output="$(hostos packages missing)" || exit 1
+    while IFS= read -r package; do
+        [[ -n "$package" ]] && missing+=("$package")
+    done <<< "$output"
 
-    # de-duplicate
-    if [[ ${#need[@]} -eq 0 ]]; then
+    if [[ ${#missing[@]} -eq 0 ]]; then
         ok "all required system packages are present"
         return 0
     fi
 
-    local uniq_need
-    uniq_need="$(printf '%s\n' "${need[@]}" | sort -u | tr '\n' ' ')"
-    warn "missing system packages: $uniq_need"
+    local list="${missing[*]}"
+    warn "missing system packages: $list"
 
-    if [[ "$ALLOW_APT" != "1" ]]; then
-        fail "cannot install missing packages (--no-apt set). Install manually: sudo apt-get install -y $uniq_need"
-        exit 1
-    fi
-    if ! command -v apt-get >/dev/null 2>&1; then
-        fail "apt-get not found — install manually: $uniq_need"
+    if [[ "$ALLOW_SYSTEM_PACKAGES" != "1" ]]; then
+        local hint
+        hint="$(hostos packages hint "${missing[@]}")" || exit 1
+        fail "cannot install missing packages (--no-apt set). Install manually: $hint"
         exit 1
     fi
 
-    local sudo_cmd=""
-    if [[ "$EUID" -ne 0 ]]; then
-        command -v sudo >/dev/null 2>&1 || { fail "sudo is required to install packages as non-root"; exit 1; }
-        sudo_cmd="sudo"
-    fi
-
+    local commands
+    commands="$(hostos packages show "${missing[@]}")" || exit 1
     if [[ "$SILENT" != "1" ]]; then
-        confirm "Install missing packages with 'apt-get' now" "Y" || { fail "cannot continue without required packages."; exit 1; }
+        confirm "Install missing packages with '$commands' now" "Y" ||
+            { fail "cannot continue without required packages."; exit 1; }
     fi
 
-    info "running: ${sudo_cmd:+$sudo_cmd }apt-get update && apt-get install -y $uniq_need"
-    # shellcheck disable=SC2086
-    $sudo_cmd apt-get update -qq
-    # shellcheck disable=SC2086
-    $sudo_cmd apt-get install -y -qq $uniq_need
+    info "running: $commands"
+    if ! hostos packages install "${missing[@]}"; then
+        fail "system package installation failed."
+        exit 1
+    fi
     ok "system packages installed"
 }
 
@@ -749,13 +752,29 @@ print(chosen[0]['version'])
     printf '%s\n' "$NODE_FALLBACK_VERSION"
 }
 
+# sha256_file <path> — print the SHA-256 hex digest using Python's hashlib.
+sha256_file() {
+    python3 - "$1" <<'PY'
+import hashlib
+import sys
+
+digest = hashlib.sha256()
+with open(sys.argv[1], "rb") as handle:
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+print(digest.hexdigest())
+PY
+}
+
 install_node() {
-    local platform="linux-x64" version tarball url workdir
+    local platform version tarball url workdir
     for tool in curl tar; do
         command -v "$tool" >/dev/null 2>&1 || { fail "$tool is required to install Node.js"; return 1; }
     done
-    command -v sha256sum >/dev/null 2>&1 || { fail "sha256sum is required to verify the Node.js download"; return 1; }
+    command -v python3 >/dev/null 2>&1 ||
+        { fail "python3 is required to verify the Node.js download"; return 1; }
 
+    platform="$(hostos tool-platform --style node)" || return 1
     version="$(resolve_node_version)"
     tarball="node-$version-$platform.tar.xz"
     url="$NODE_DIST_URL/$version/$tarball"
@@ -774,7 +793,7 @@ install_node() {
     local expected actual
     expected="$(awk -v file="$tarball" '$2 == file {print $1}' "$workdir/SHASUMS256.txt")"
     [[ -n "$expected" ]] || { fail "$tarball is not listed in SHASUMS256.txt"; return 1; }
-    actual="$(sha256sum "$workdir/$tarball" | awk '{print $1}')"
+    actual="$(sha256_file "$workdir/$tarball" 2>/dev/null || true)"
     [[ "$expected" == "$actual" ]] || { fail "checksum mismatch for $tarball"; return 1; }
 
     tar -xJf "$workdir/$tarball" -C "$workdir" || { fail "failed to extract $tarball"; return 1; }
@@ -868,7 +887,7 @@ ensure_venv() {
     local stamp=".venv/.install-stamp"
     local current_hash=""
     if [[ -f apps/backend/pyproject.toml ]]; then
-        current_hash="${extra}:$(sha256sum apps/backend/pyproject.toml 2>/dev/null | awk '{print $1}')"
+        current_hash="${extra}:$(sha256_file apps/backend/pyproject.toml 2>/dev/null || true)"
     fi
 
     local check_import="import llm_d_lens, uvicorn"
@@ -952,7 +971,7 @@ setup_tls() {
     step "Setting up HTTPS (self-signed certificate)"
     local host="$TLS_HOST"
     if [[ -z "$host" ]]; then
-        host="$(hostname -I 2>/dev/null | awk '{print $1}')"
+        host="$(hostos lan-ip)" || exit 1
     fi
     if [[ -z "$host" ]]; then
         warn "could not detect a LAN IP for the TLS certificate — falling back to plain HTTP."
@@ -1007,6 +1026,8 @@ DB_MODE="${DB_MODE:-embedded}"
 PID_DIR="$ROOT_DIR/.prism-pids"
 source "$ROOT_DIR/hack/storage-env.sh"
 LOG_DIR="$LENS_LOG_DIR/service"
+# Retained for operators/tools that inspect the generated script.
+# shellcheck disable=SC2034
 EVALUATE_STORE="$LENS_DATA_DIR/metadata/evaluations"
 
 if [[ -x "$ROOT_DIR/.tools/node/bin/node" ]]; then
@@ -1017,66 +1038,65 @@ log()  { printf '\033[1;36m[lens]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[lens]\033[0m %s\n' "$*" >&2; }
 fail() { printf '\033[1;31m[lens]\033[0m %s\n' "$*" >&2; }
 
+# hostos — run the host OS layer with the installed virtualenv. It returns
+# 0/1 to the caller and aborts on a usage/internal error (exit >= 2).
+hostos_exec() {
+    PYTHONPATH="$ROOT_DIR/apps/backend/src" \
+        "$ROOT_DIR/.venv/bin/python" -m llm_d_lens.infrastructure.hostos "$@"
+}
+hostos() {
+    local rc=0
+    hostos_exec "$@" || rc=$?
+    if (( rc >= 2 )); then
+        fail "hostos command failed (exit $rc)"
+        exit 1
+    fi
+    return "$rc"
+}
+
 pid_file() { printf '%s/%s.pid' "$PID_DIR" "$1"; }
 is_running() {
     local pid; pid="$(cat "$(pid_file "$1")" 2>/dev/null || echo '')"
     [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
 }
+# Ports from .lens-install.env are hand-editable, so validate them before
+# passing them to hostos (argparse would otherwise abort with a usage error).
+valid_port() {
+    [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 ))
+}
 # This host may be shared with other users/instances, so a previously chosen
 # port can end up already bound by someone/something else by the time this
 # runs again -- check right before starting rather than finding out from a
 # crashed uvicorn/node log after the fact.
+# Relies on an earlier `hostos check` gate: `port-in-use` exits 1 both when the port is free and when unsupported.
 port_in_use() {
-    local port="$1"
-    if command -v ss >/dev/null 2>&1; then
-        ss -H -ltn "( sport = :$port )" 2>/dev/null | grep -q .
-        return
-    fi
-    (: < "/dev/tcp/127.0.0.1/$port") 2>/dev/null
+    hostos port-in-use -- "$1"
 }
 find_free_port() {
-    local port="$1" tries=0
-    while port_in_use "$port"; do
-        port=$((port + 1))
-        tries=$((tries + 1))
-        if [[ $tries -ge 200 ]]; then
-            fail "could not find a free port at or after $1 (checked 200 ports)"
-            exit 1
-        fi
-    done
-    printf '%s\n' "$port"
+    hostos free-port -- "$1"
 }
 # describe_port_owner <port> -> best-effort "who's holding this port" string;
 # on this kind of shared host the occupant is often another user's process,
-# whose PID `ss` won't reveal without root, so say that plainly instead of
+# whose PID won't be visible without root, so say that plainly instead of
 # guessing.
 describe_port_owner() {
-    local port="$1" line pid owner
-    line="$(ss -H -ltnp "( sport = :$port )" 2>/dev/null | head -1)"
-    if [[ -n "$line" ]]; then
-        if [[ "$line" =~ pid=([0-9]+) ]]; then
-            pid="${BASH_REMATCH[1]}"
-            owner="$(ps -o comm=,user= -p "$pid" 2>/dev/null)"
-            if [[ -n "$owner" ]]; then
-                printf '%s (pid %s)' "$owner" "$pid"
-                return 0
-            fi
-        fi
-        printf 'another process on this shared host (owner not visible without root)'
-        return 0
-    fi
-    printf 'an unknown process'
+    hostos port-owner -- "$1"
 }
 # resolve_ports — auto-switch away from an already-occupied port instead of
 # starting a service doomed to crash with EADDRINUSE; explains what's holding
 # the old port (not just the new one picked) and reports the actual port
 # used (also visible afterwards via .lens-install.env / status).
 resolve_ports() {
-    local original
+    if ! valid_port "$APP_PORT"; then
+        fail "APP_PORT must be a port between 1 and 65535 (got '$APP_PORT')."
+        return 1
+    fi
+    local original owner
     if ! is_running "app" && port_in_use "$APP_PORT"; then
         original="$APP_PORT"
-        warn "app port $original is already held by $(describe_port_owner "$original")."
-        APP_PORT="$(find_free_port "$APP_PORT")"
+        owner="$(describe_port_owner "$original")" || exit 1
+        warn "app port $original is already held by $owner."
+        APP_PORT="$(find_free_port "$APP_PORT")" || exit 1
         warn "switched app port to $APP_PORT instead."
     fi
     BACKEND_PORT="$APP_PORT"
@@ -1101,7 +1121,7 @@ ensure_tls() {
     if [[ -n "$TLS_CERT_FILE" && -n "$TLS_KEY_FILE" && -s "$TLS_CERT_FILE" && -s "$TLS_KEY_FILE" ]]; then
         return 0
     fi
-    local host; host="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    local host; host="$(hostos lan-ip)" || exit 1
     if [[ -z "$host" ]]; then
         warn "could not detect a LAN IP for the TLS certificate — running plain HTTP."
         ENABLE_HTTPS=0
@@ -1123,7 +1143,8 @@ start_one() {
     fi
     mkdir -p "$PID_DIR" "$LOG_DIR"
     log "starting $name..."
-    local run_log="$name-$(date -u +%Y%m%dT%H%M%S%NZ)-$$.log"
+    local run_log
+    run_log="$name-$(date -u +%Y%m%dT%H%M%S%NZ)-$$.log"
     ln -sfn "$run_log" "$LOG_DIR/$name.log"
     nohup "$@" > "$LOG_DIR/$run_log" 2>&1 &
     echo "$!" > "$(pid_file "$name")"
@@ -1157,6 +1178,10 @@ regenerate_mcp_tools() {
     fi
 }
 cmd_start() {
+    if ! hostos check >/dev/null; then
+        fail "host check failed; this host is not supported."
+        exit 1
+    fi
     if is_running backend; then
         fail "The legacy backend is still running; use restart to switch to the unified service."
         return 1
@@ -1164,19 +1189,28 @@ cmd_start() {
     resolve_ports
     persist_ports
     ensure_tls
+    # When the installed backend serves HTTPS with its self-signed certificate,
+    # the Istio Gateway must originate unverified TLS to the lens-authz hop;
+    # without it every Gateway request fails closed with 503. Mirrors
+    # hack/lens-local.sh; an explicit environment value wins.
+    local authz_tls_insecure="${LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE:-}"
+    if [[ -z "$authz_tls_insecure" ]]; then
+        if [[ "$ENABLE_HTTPS" == "1" ]]; then authz_tls_insecure=1; else authz_tls_insecure=0; fi
+    fi
     regenerate_mcp_tools
     local scheme="http"
     [[ "$ENABLE_HTTPS" == "1" ]] && scheme="https"
     start_one app env NODE_ENV=production BACKEND_HOST="$APP_HOST" BACKEND_PORT="$APP_PORT" \
         PRISM_MCP_URL="$scheme://127.0.0.1:$APP_PORT/api/mcp" \
         PRISM_MCP_CA_FILE="${TLS_CERT_FILE:-}" \
+        LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE="$authz_tls_insecure" \
         TLS_CERT_FILE="$TLS_CERT_FILE" TLS_KEY_FILE="$TLS_KEY_FILE" \
         bash hack/run-backend.sh
     log "waiting for services to become ready..."
     wait_for_http app     "$scheme://127.0.0.1:$APP_PORT/api/health"
     wait_for_http app     "$scheme://127.0.0.1:$APP_PORT/api/config"
     local lan_ip
-    lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    lan_ip="$(hostos lan-ip)" || exit 1
     log "llm-d Lens is running:"
     log "  app       $scheme://localhost:$APP_PORT  (bound to $APP_HOST)"
     [[ -n "$lan_ip" && "$APP_HOST" == "0.0.0.0" ]] && log "             $scheme://$lan_ip:$APP_PORT  (LAN)"
@@ -1244,13 +1278,12 @@ cmd_stop() {
 }
 
 cmd_status() {
-    for svc in app; do
-        if is_running "$svc"; then
-            log "  $svc: running (pid $(cat "$(pid_file "$svc")"))"
-        else
-            log "  $svc: stopped"
-        fi
-    done
+    local svc="app"
+    if is_running "$svc"; then
+        log "  $svc: running (pid $(cat "$(pid_file "$svc")"))"
+    else
+        log "  $svc: stopped"
+    fi
     if is_running backend; then
         warn "legacy backend: running; use restart to switch to the unified service."
     fi
@@ -1379,8 +1412,7 @@ install_from_source() {
     fi
 
     print_logo
-    require_ubuntu
-    require_arch
+    require_host_os
     if [[ "$FRESH_INSTALL" == 1 ]]; then
         if [[ -L "$INSTALL_DIR" ]] || { [[ -e "$INSTALL_DIR" ]] &&
             { [[ ! -d "$INSTALL_DIR" ]] || [[ -n "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]]; }; }; then

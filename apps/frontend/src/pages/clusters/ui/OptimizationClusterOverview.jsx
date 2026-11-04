@@ -119,11 +119,11 @@ function getNodeGpus(node) {
     const totalVram = node.vramBytes || 0;
     const vramPerGpu = count > 0 ? Math.floor(totalVram / count) : 0;
     const gpuUsage = typeof node.gpuUsagePercent === 'number' ? node.gpuUsagePercent : 0;
-    const vramUsage = typeof node.vramUsagePercent === 'number' ? node.vramUsagePercent : 0;
+    const vramUsage = typeof node.vramUsagePercent === 'number' ? node.vramUsagePercent : null;
 
     return Array.from({ length: count }, (_, i) => {
         const computePct = Math.min(100, Math.max(0, gpuUsage));
-        const vramUsed = Math.floor(vramPerGpu * (vramUsage / 100));
+        const vramUsed = vramUsage === null ? null : Math.floor(vramPerGpu * (vramUsage / 100));
 
         return {
             id: `gpu-${i}`,
@@ -133,7 +133,7 @@ function getNodeGpus(node) {
             computeUsagePercent: Math.round(computePct * 10) / 10,
             vramTotalBytes: vramPerGpu,
             vramUsedBytes: vramUsed,
-            vramUsagePercent: Math.round((vramPerGpu > 0 ? vramUsed / vramPerGpu : 0) * 100 * 10) / 10,
+            vramUsagePercent: vramUsed === null ? null : Math.round((vramPerGpu > 0 ? vramUsed / vramPerGpu : 0) * 100 * 10) / 10,
             vramReadThroughputBytes: 0,
             vramWriteThroughputBytes: 0,
             vramTotalThroughputBytes: 0,
@@ -908,7 +908,7 @@ export default function OptimizationClusterOverview({ onNavigate, onToggleMobile
                                                                                             />
                                                                                         </div>
                                                                                         <div className="text-[10px] text-slate-400 text-right font-mono">
-                                                                                            {formatBytes(gpu.vramUsedBytes)} / {formatBytes(gpu.vramTotalBytes)}
+                                                                                            {gpu.vramUsedBytes == null ? '—' : formatBytes(gpu.vramUsedBytes)} / {formatBytes(gpu.vramTotalBytes)}
                                                                                         </div>
                                                                                     </div>
                                                                                     )}

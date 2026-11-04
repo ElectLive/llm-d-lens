@@ -17,7 +17,6 @@ import hmac
 import logging
 import shlex
 import shutil
-import stat
 import tempfile
 from pathlib import Path
 
@@ -32,6 +31,7 @@ from llm_d_lens.cluster.bootstrap.dto import (
 from llm_d_lens.cluster.bootstrap.host_expr import MAX_EXPANDED_HOSTS, expand_host_spec
 from llm_d_lens.cluster.bootstrap.inventory import artifacts_kubeconfig_path, write_inventory
 from llm_d_lens.cluster.bootstrap.models import BootstrapJob, BootstrapNode, job_store
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.process import CommandNotFoundError, shell, which
 from llm_d_lens.infrastructure.ssh import SshTarget, inspect_host_key, remote_exec
 from llm_d_lens.infrastructure.storage.paths import storage_path
@@ -124,7 +124,7 @@ def _write_known_hosts(nodes: list[BootstrapNode], path: Path) -> None:
         known_host = node.host if node.port == 22 else f"[{node.host}]:{node.port}"
         entries.append(f"{known_host} {key_info.algorithm} {key_info.key_data}")
     path.write_text("\n".join(entries) + "\n")
-    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    current_host().restrict_to_owner(path)
 
 
 def _expand_all(payloads: list[BootstrapNodeInput]) -> list[BootstrapNode]:
@@ -144,7 +144,7 @@ def _materialize_key(node: BootstrapNode, keys_dir: Path) -> None:
     keys_dir.mkdir(parents=True, exist_ok=True)
     key_path = keys_dir / f"{node.name}.key"
     key_path.write_text(node.private_key if node.private_key.endswith("\n") else node.private_key + "\n")
-    key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    current_host().restrict_to_owner(key_path)
 
 
 def _cleanup_keys(nodes: list[BootstrapNode]) -> None:
@@ -314,12 +314,13 @@ async def run_bootstrap_job(job_id: str) -> None:
 
         uses_password_auth = any(not node.private_key_path and node.password for node in job.nodes)
         if uses_password_auth and which("sshpass") is None:
+            host = current_host()
             job.phase = "failed"
             job.error = (
                 "one or more nodes use password authentication, but 'sshpass' is not installed on "
                 "the Prism backend host (required by Ansible's ssh connection plugin to supply "
-                "ansible_ssh_pass) -- install it (e.g. `apt-get install sshpass`) or use an SSH "
-                "private key for those nodes instead"
+                f"ansible_ssh_pass) -- install it (e.g. `{host.install_hint(host.tool_packages('sshpass'))}`) "
+                "or use an SSH private key for those nodes instead"
             )
             return
 

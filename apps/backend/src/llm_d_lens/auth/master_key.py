@@ -32,6 +32,7 @@ from typing import Any, Protocol
 from llm_d_lens.auth.security import SecretCipher
 from llm_d_lens.auth.settings import AuthSettings
 from llm_d_lens.core.exceptions import DomainValidationError
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.storage.paths import storage_path
 
 logger = logging.getLogger(__name__)
@@ -91,9 +92,9 @@ def _write_store(primary: str, old: tuple[str, ...]) -> MasterKey:
     payload = {"primary": primary, "old": list(old)}
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    tmp.chmod(0o600)
+    current_host().restrict_to_owner(tmp)
     os.replace(tmp, path)
-    path.chmod(0o600)
+    current_host().restrict_to_owner(path)
     return MasterKey(primary=primary, old=old, source="file")
 
 

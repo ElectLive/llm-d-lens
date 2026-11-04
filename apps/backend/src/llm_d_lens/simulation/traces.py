@@ -18,6 +18,7 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 
 from llm_d_lens.infrastructure.artifacts.store import artifact_uri, register_artifacts
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.storage.paths import storage_path
 
 from .errors import SimulationConfigurationError
@@ -155,7 +156,7 @@ class BaseTrace:
             digest = hashlib.sha256()
             generated = await asyncio.to_thread(cls.generate, temporary)
             if generated:
-                os.chmod(temporary, 0o600)
+                current_host().restrict_to_owner(temporary)
                 downloaded = temporary.stat().st_size
                 if downloaded > max_bytes:
                     raise ValueError(f"generated trace exceeds max_bytes limit ({max_bytes})")
@@ -190,7 +191,7 @@ class BaseTrace:
                             response.release()
                             raise ValueError(f"download exceeds max_bytes limit ({max_bytes})")
                         with temporary.open("xb") as output:
-                            os.chmod(temporary, 0o600)
+                            current_host().restrict_to_owner(temporary)
                             async for chunk in response.content.iter_chunked(64 * 1024):
                                 downloaded += len(chunk)
                                 if downloaded > max_bytes:
@@ -209,7 +210,7 @@ class BaseTrace:
                 transformed_temporary,
             )
             if transformed != temporary:
-                os.chmod(transformed_temporary, 0o600)
+                current_host().restrict_to_owner(transformed_temporary)
                 temporary.unlink()
                 os.replace(transformed_temporary, temporary)
                 downloaded = temporary.stat().st_size
@@ -242,7 +243,7 @@ class BaseTrace:
                     + "\n",
                     encoding="utf-8",
                 )
-                os.chmod(metadata_temporary, 0o600)
+                current_host().restrict_to_owner(metadata_temporary)
                 os.replace(metadata_temporary, metadata_path)
             finally:
                 metadata_temporary.unlink(missing_ok=True)
@@ -391,7 +392,7 @@ class BaseTrace:
         temporary = destination.parent / f".{destination.name}.{uuid.uuid4().hex}.tmp"
         try:
             temporary.write_text(json.dumps(index, separators=(",", ":")) + "\n", encoding="utf-8")
-            os.chmod(temporary, 0o600)
+            current_host().restrict_to_owner(temporary)
             os.replace(temporary, destination)
         finally:
             temporary.unlink(missing_ok=True)

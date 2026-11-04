@@ -12,6 +12,8 @@ from llm_d_lens.infrastructure.artifacts.manifests import configuration_checksum
 
 from .planner import PlannedCandidate
 
+AGENTIC_RUNTIME_BACKEND = "vllm"
+
 
 def build_agentic_configuration(
     request: StandardKubernetesServiceRequest,
@@ -101,7 +103,7 @@ def build_agentic_configuration(
             "tensorParallelSize": candidate.prefill_tensor_parallel_size,
             "maxModelLen": request.max_model_len,
         }
-        content["guideVariant"] = candidate.guide_variant or "vllm"
+        content["guideVariant"] = candidate.guide_variant or AGENTIC_RUNTIME_BACKEND
     elif candidate.provider_ref == "tiered-prefix-cache":
         configuration_type = "tiered_cache"
         variant = candidate.guide_variant or "native/cpu"

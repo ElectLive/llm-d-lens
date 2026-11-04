@@ -1,7 +1,6 @@
 """Tests for ``python -m llm_d_lens.db.bootstrap_cli`` -- the installer's
 non-interactive replacement for the old in-wizard database setup gate. See
-``llm_d_lens/db/bootstrap_cli.py`` and
-``scripts/LensInstaller-Ubuntu-x86_64-online.sh``.
+``llm_d_lens/db/bootstrap_cli.py`` and the online installer.
 """
 
 from __future__ import annotations
@@ -16,11 +15,19 @@ from llm_d_lens.db.bootstrap_config import load_bootstrap_config
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch, tmp_path):
+    from llm_d_lens.db import settings as db_settings
+
     monkeypatch.delenv("LLM_D_BENCH_DATABASE_URL", raising=False)
     monkeypatch.delenv("LLM_D_BENCH_DB_MODE", raising=False)
     monkeypatch.delenv("LLM_D_BENCH_EMBEDDED_DB_PASSWORD", raising=False)
     monkeypatch.setenv("LLM_D_BENCH_DB_BOOTSTRAP_FILE", str(tmp_path / "db-bootstrap.json"))
-    yield
+    monkeypatch.setenv("LLM_D_BENCH_EMBEDDED_DB_DIR", str(tmp_path / "embedded"))
+    monkeypatch.setattr(db_settings, "_embedded_server", None)
+    try:
+        yield
+    finally:
+        if db_settings._embedded_server is not None:
+            db_settings._embedded_server.cleanup()
     # apply_database_setup mutates os.environ directly; pop straight from
     # os.environ (see the identical note in test_system_router.py).
     os.environ.pop("LLM_D_BENCH_DATABASE_URL", None)

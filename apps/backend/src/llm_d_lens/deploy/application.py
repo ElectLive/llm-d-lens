@@ -18,6 +18,7 @@ from llm_d_lens.deploy.runtime.composition import (
     build_deployment_service_from_environment,
 )
 from llm_d_lens.deploy.worker import DeploymentRunWorker
+from llm_d_lens.infrastructure.hostos import current_host
 
 
 def cluster_deployment_source(session, requested: dict | None = None) -> dict:
@@ -231,7 +232,7 @@ class DeploymentRunManager:
             lifecycle_error = (
                 "cluster session is no longer active; reconnect the original cluster before changing this deployment"
             )
-            runtime_overrides = {"KUBECONFIG": str(Path("/dev/null"))}
+            runtime_overrides = {"KUBECONFIG": current_host().null_device}
         accelerator = _deploy_accelerator(run)
         accelerator_env = {"PRISM_DEPLOY_ACCELERATOR": accelerator} if accelerator else {}
         # The cluster's saved proxy configuration is authoritative for anything

@@ -604,20 +604,22 @@ Gateway 命名空间前缀会附加该 Lens 集群注册的稳定短 ID。注册
   </TabItem>
 </Tabs>
 
-### 应用固定版本的 Gateway API / Gateway API Inference Extension CRD
+### 应用固定版本的 Gateway API / Gateway API Inference Extension / llm-d Router CRD
 
-应用由 Lens 技术栈配置文件固定版本的 Gateway API（`gateway.networking.k8s.io`）和 Gateway API Inference Extension（`inference.networking.k8s.io`）CRD 包。该操作是幂等的；集群创建过程中也会执行此操作。
+应用由 Lens 技术栈配置文件固定版本的 Gateway API（`gateway.networking.k8s.io`）、Gateway API Inference Extension（`inference.networking.k8s.io`）和 llm-d Router（`inferencemodelrewrites.llm-d.ai`）CRD 包。该操作是幂等的；集群创建过程中也会执行此操作。执行 CRDs 操作时，Lens 还会重启 pod 模板中缺少当前 CRD 修订标记、由 Lens 管理的 router EPP，使其重新注册 `InferenceModelRewrite` API，公开模型别名才能生效。升级后首次执行该操作时，会重启所有已发布的 EPP 一次。新增的 `router_epp_repair` 键报告该结果。
 
 <Tabs>
   <TabItem value="rest-api" label="REST API">
     **`POST /api/cluster/clusters/{cluster_id}/crds`**
 
-    响应：每个 CRD 包的执行结果。
+    响应：每个 CRD 包的执行结果，以及新增的 `router_epp_repair` 结果。
 
     ```json
     {
       "gateway_api": { "ok": true, "message": "" },
-      "gateway_api_inference_extension": { "ok": true, "message": "" }
+      "gateway_api_inference_extension": { "ok": true, "message": "" },
+      "llm_d_router": { "ok": true, "message": "" },
+      "router_epp_repair": { "ok": true, "restarted": ["deploy/qwen-epp"], "message": "" }
     }
     ```
   </TabItem>
@@ -626,14 +628,14 @@ Gateway 命名空间前缀会附加该 Lens 集群注册的稳定短 ID。注册
     from llm_d_lens.cluster import gateway_crds
 
     result = await gateway_crds.apply_gateway_crds("cluster-a")
-    print(result["gateway_api"]["ok"])
+    print(result["gateway_api"]["ok"], result["llm_d_router"]["ok"])
     ```
   </TabItem>
 </Tabs>
 
-### 获取 Gateway API / GIE CRD 状态
+### 获取 Gateway API / GIE / llm-d Router CRD 状态
 
-报告集群上是否存在固定版本的 Gateway API 和 Gateway API Inference Extension CRD（每个包的状态为 `ready`/`missing`）。
+报告集群上是否存在固定版本的 Gateway API、Gateway API Inference Extension 和 llm-d Router CRD（每个包的状态为 `ready`/`missing`）。只有当服务发现也提供 `inferencemodelrewrites` 资源时，llm-d Router 包才为就绪。
 
 <Tabs>
   <TabItem value="rest-api" label="REST API">
@@ -642,7 +644,8 @@ Gateway 命名空间前缀会附加该 Lens 集群注册的稳定短 ID。注册
     ```json
     {
       "gateway_api": "ready",
-      "gateway_api_inference_extension": "ready"
+      "gateway_api_inference_extension": "ready",
+      "llm_d_router": "ready"
     }
     ```
   </TabItem>
@@ -651,7 +654,7 @@ Gateway 命名空间前缀会附加该 Lens 集群注册的稳定短 ID。注册
     from llm_d_lens.cluster import gateway_crds
 
     status = await gateway_crds.gateway_crds_status("cluster-a")
-    print(status["gateway_api"])
+    print(status["gateway_api"], status["llm_d_router"])
     ```
   </TabItem>
 </Tabs>
@@ -835,6 +838,15 @@ Gateway 命名空间必须清理成功：失败或超时返回 `502 cluster_gate
 ### 获取集群概览
 
 返回一个集群的实时 Kubernetes 概览信息，包括节点、GPU、命名空间、缓存镜像以及组件健康状况摘要。该路由还会在返回实时快照的同时报告当前的集群记录。
+
+显存容量优先使用 Prometheus 遥测，其次使用 DRA ResourceSlice 容量。
+两者均未提供容量时，已注册的硬件 profile 可以读取工作节点上的每卡显存和设备数量标签。
+NVIDIA profile 使用 GFD 的 `nvidia.com/gpu.memory`（MiB）和 `nvidia.com/gpu.count`；
+标签数量必须与识别的设备容量一致，避免将共享副本数计入物理显存。
+该补充来源仅提供静态总容量，不提供当前显存占用或剩余显存。
+缺少占用遥测时，设备的 `vramUsedBytes` 和 `vramUsagePercent` 保持 `null`，界面显示未知而非零占用。
+标签缺失或无效时，容量仍保持未知，不会根据型号猜测显存。
+标签名称和单位由 profile 的 `planning.node_memory` 声明；未声明的 profile 不启用该补充来源。
 
 <Tabs>
   <TabItem value="rest-api" label="REST API">

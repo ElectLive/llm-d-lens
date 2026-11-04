@@ -5,28 +5,33 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from llm_d_lens.infrastructure.hostos import current_host
+
 
 def storage_path(area: str, *parts: str) -> Path:
-    """Resolve a controlled path using only Lens roots and XDG defaults.
+    """Resolve a controlled path using only Lens roots and host defaults.
 
-    LENS_* overrides win over XDG defaults. No directories are created and no
-    legacy data is moved on import. Use the explicit storage migration command.
+    LENS_* overrides win over the host's XDG defaults. No directories are
+    created and no legacy data is moved on import. Use the explicit storage
+    migration command.
     """
-    home = Path.home()
+    host = current_host()
     defaults = {
-        "data": Path(os.environ.get("XDG_DATA_HOME") or home / ".local/share") / "lens",
-        "cache": Path(os.environ.get("XDG_CACHE_HOME") or home / ".cache") / "lens",
-        "log": Path(os.environ.get("XDG_STATE_HOME") or home / ".local/state") / "lens/logs",
+        "data": host.default_base("data"),
+        "cache": host.default_base("cache"),
+        "log": host.default_base("log"),
     }
     if area in defaults:
         root = Path(os.environ.get(f"LENS_{area.upper()}_DIR") or defaults[area])
     elif area == "scratch":
         root = Path(os.environ.get("LENS_SCRATCH_DIR") or storage_path("cache", "tmp"))
     elif area == "runtime":
-        xdg = os.environ.get("XDG_RUNTIME_DIR")
-        root = Path(
-            os.environ.get("LENS_RUNTIME_DIR") or (Path(xdg) / "lens" if xdg else storage_path("scratch", "runtime"))
-        )
+        override = os.environ.get("LENS_RUNTIME_DIR")
+        if override:
+            root = Path(override)
+        else:
+            runtime_base = host.default_base("runtime")
+            root = runtime_base if runtime_base is not None else storage_path("scratch", "runtime")
     else:
         raise ValueError(f"Unknown storage area: {area}")
     root = root.expanduser().resolve()

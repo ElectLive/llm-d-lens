@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import json
 import math
 import os
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 from copy import deepcopy
@@ -94,6 +92,7 @@ from llm_d_lens.hardware.resolver import (
 from llm_d_lens.hardware.telemetry import parse_device_metrics
 from llm_d_lens.infrastructure.artifacts.manifests import configuration_checksum
 from llm_d_lens.infrastructure.artifacts.store import register_artifacts
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.kubernetes.proxy import api_server_host
 from llm_d_lens.infrastructure.storage.paths import storage_path
 from llm_d_lens.model_service.resolution import resolve_model_service_target
@@ -2627,7 +2626,7 @@ def _benchmark_ready(root: Path) -> bool:
     points at a deleted path. Validate the shebang so such a broken install is
     detected and rebuilt rather than surfaced as a confusing ENOENT at exec time.
     """
-    script = root / ".venv" / "bin" / "llmdbenchmark"
+    script = current_host().venv_executable(root / ".venv", "llmdbenchmark")
     if not script.is_file():
         return False
     try:
@@ -2658,7 +2657,7 @@ async def _prepare_benchmark_runtime(source: dict | None = None) -> tuple[str, P
         # or reinstalled/upgraded later -- still get it applied.
         await asyncio.to_thread(_patch_kubernetes_client_no_proxy_bug, root / ".venv")
         await asyncio.to_thread(_patch_harness_kubernetes_no_proxy, root)
-        return str(root / ".venv" / "bin" / "llmdbenchmark"), root
+        return str(current_host().venv_executable(root / ".venv", "llmdbenchmark")), root
     raise ValueError(
         "Cluster llm-d-benchmark source is required. Configure and download its Software Versions before benchmarking."
     )
@@ -2668,7 +2667,7 @@ def _install_benchmark_checkout(root: Path) -> None:
     """Install the CLI in the cluster-owned checkout without cloning another source tree."""
     lock_path = root.parent / f".{root.name}.install.lock"
     with lock_path.open("w", encoding="utf-8") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        current_host().try_lock(lock)
         if _benchmark_ready(root):
             return
         venv = root / ".venv"
@@ -2690,9 +2689,9 @@ def _install_benchmark_checkout(root: Path) -> None:
         report = root / "benchmark-report"
         workspace_packages = [str(report)] if (report / "pyproject.toml").is_file() else []
         if uv:
-            install_command = [uv, "pip", "install", "--python", str(venv / "bin" / "python")]
+            install_command = [uv, "pip", "install", "--python", str(current_host().venv_executable(venv, "python"))]
         else:
-            install_command = [str(venv / "bin" / "python"), "-m", "pip", "install"]
+            install_command = [str(current_host().venv_executable(venv, "python")), "-m", "pip", "install"]
         install = subprocess.run(
             [*install_command, "-e", str(root), *workspace_packages, _BENCHMARK_PLANNER],
             capture_output=True,
@@ -2705,7 +2704,7 @@ def _install_benchmark_checkout(root: Path) -> None:
             raise RuntimeError(install.stderr.strip()[-2000:] or "benchmark dependency installation failed")
         verify = subprocess.run(
             [
-                str(venv / "bin" / "python"),
+                str(current_host().venv_executable(venv, "python")),
                 "-c",
                 "import llmdbenchmark; from planner.capacity_planner import model_memory_req",
             ],
@@ -2785,7 +2784,7 @@ def _patch_harness_kubernetes_no_proxy(root: Path) -> None:
     anchor = "{{ harness_command }}"
     marker = "{# Lens: preserve Kubernetes client NO_PROXY in the harness image. #}\n"
     with template.open("r+", encoding="utf-8") as stream:
-        fcntl.flock(stream, fcntl.LOCK_EX)
+        current_host().try_lock(stream)
         text = stream.read()
         if marker in text:
             return
@@ -2855,7 +2854,7 @@ def _install_helm_proxy_wrapper(output: Path, environment: dict[str, str], proxy
         f"os.execv({helm!r}, [{helm!r}, *sys.argv[1:]])\n",
         encoding="utf-8",
     )
-    wrapper.chmod(0o700)
+    current_host().make_executable(wrapper, private=True)
     environment["PATH"] = f"{wrapper_directory}{os.pathsep}{environment.get('PATH', '')}"
 
 
@@ -2933,11 +2932,12 @@ def _execution_accelerator_profile(execution, configured: str | None = None) -> 
 async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
     if process.returncode is not None:
         return
-    os.killpg(process.pid, signal.SIGTERM)
+    host = current_host()
+    host.signal_group(process.pid, force=False)
     try:
         await asyncio.wait_for(process.wait(), timeout=10)
     except TimeoutError:
-        os.killpg(process.pid, signal.SIGKILL)
+        host.signal_group(process.pid, force=True)
         await process.wait()
 
 
@@ -3362,7 +3362,7 @@ async def _execute_owned(run_id: str) -> None:
                     env=environment,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,
+                    **current_host().group_spawn_kwargs(),
                 )
                 process = (
                     point_process  # so a cancelled evaluation can terminate the in-flight matrix/warm-up subprocess
@@ -3517,7 +3517,7 @@ async def _execute_owned(run_id: str) -> None:
                 env=environment,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
+                **current_host().group_spawn_kwargs(),
             )
             stdout, stderr = await _stream_benchmark_process(
                 process, run, namespace=benchmark_namespace, environment=environment
@@ -3575,7 +3575,7 @@ async def _execute_owned(run_id: str) -> None:
                 env=environment,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
+                **current_host().group_spawn_kwargs(),
             )
             stdout, stderr = await _stream_benchmark_process(
                 process, run, namespace=benchmark_namespace, environment=environment
@@ -3614,7 +3614,7 @@ async def _execute_owned(run_id: str) -> None:
                 env=environment,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
+                **current_host().group_spawn_kwargs(),
             )
             stdout, stderr = await _stream_benchmark_process(
                 process, run, namespace=benchmark_namespace, environment=environment

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.process import CommandNotFoundError, run_sync
 from llm_d_lens.infrastructure.storage.paths import storage_path
 
@@ -43,7 +44,7 @@ def venv_dir(tag: str = KUBESPRAY_TAG) -> Path:
 
 
 def ansible_playbook_path(tag: str = KUBESPRAY_TAG) -> Path:
-    return venv_dir(tag) / "bin" / "ansible-playbook"
+    return current_host().venv_executable(venv_dir(tag), "ansible-playbook")
 
 
 def cluster_playbook_path(tag: str = KUBESPRAY_TAG) -> Path:
@@ -83,7 +84,7 @@ def ensure_ready(tag: str = KUBESPRAY_TAG) -> Path:
             raise RuntimeError(create_venv.stderr.strip() or "failed to create Kubespray venv")
         requirements = dest / "requirements.txt"
         install = run_sync(
-            [str(venv / "bin" / "pip"), "install", "-q", "-r", str(requirements)],
+            [str(current_host().venv_executable(venv, "pip")), "install", "-q", "-r", str(requirements)],
             timeout=_VENV_TIMEOUT_SECONDS,
         )
         if install.returncode != 0:

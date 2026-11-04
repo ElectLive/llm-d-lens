@@ -83,7 +83,7 @@ Common options:
 | `--db-mode embedded\|external` | Use the built-in database or an external one. |
 | `-h, --help` | Show every option. |
 
-When auto-HTTPS is enabled, the local source launcher also enables unverified TLS for the model Gateway's internal `lens-authz` hop (`LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE=1`), because the cluster does not trust the self-signed certificate. This is a development convenience and disables certificate verification for that hop, so a network attacker could impersonate authz and forge identity. Use it only on a trusted network. See [Environment variables](/environment-variables) for the security warning and how to disable it.
+When auto-HTTPS is enabled, the installer-generated `lensctl.sh` and the local source launcher also enable unverified TLS for the model Gateway's internal `lens-authz` hop (`LENS_MODEL_GATEWAY_AUTHZ_TLS_INSECURE=1`), because the cluster does not trust the self-signed certificate. This is a development convenience and disables certificate verification for that hop, so a network attacker could impersonate authz and forge identity. Use it only on a trusted network. See [Environment variables](/environment-variables) for the security warning and how to disable it.
 
 ## Manage the installation
 

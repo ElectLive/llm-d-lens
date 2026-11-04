@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'scripts/*Installer*'
+      - 'apps/backend/src/llm_d_lens/infrastructure/hostos/**'
       - '.github/workflows/installer-checks.yaml'
   push:
     branches: [main]
@@ -52,3 +53,18 @@ jobs:
             "$PYTHON_BIN" -m venv "$RUNNER_TEMP/lens-installer-venv"
             "$RUNNER_TEMP/lens-installer-venv/bin/python" -c "import sys; assert sys.version_info >= (3, 11)"
           '
+      - name: Check host OS layer with the system Python
+        run: |
+          python3 --version
+          PYTHONPATH=apps/backend/src python3 -m llm_d_lens.infrastructure.hostos check --installer ubuntu
+          PYTHONPATH=apps/backend/src python3 -m llm_d_lens.infrastructure.hostos info
+          PYTHONPATH=apps/backend/src python3 -m llm_d_lens.infrastructure.hostos packages missing
+      - name: Check generated lensctl.sh
+        run: |
+          workdir="$(mktemp -d)"
+          INSTALL_DIR="$workdir" bash -c '
+            source scripts/LensInstaller-Ubuntu-x86_64-online.sh
+            write_control_script
+          '
+          bash -n "$workdir/lensctl.sh"
+          shellcheck -x --severity=warning "$workdir/lensctl.sh"
