@@ -55,12 +55,10 @@ async def search_endpoint(request: AICRequest):
 @router.post(
     "/experiments",
     summary=(
-        "Parse an AISimulate legacy experiment YAML file and return the top "
-        "experiments Lens can extract from it."
+        "Parse an AISimulate legacy experiment YAML file and return the top experiments Lens can extract from it."
     ),
     description=(
-        "Parse an AISimulate legacy experiment YAML file and return the top "
-        "experiments Lens can extract from it."
+        "Parse an AISimulate legacy experiment YAML file and return the top experiments Lens can extract from it."
     ),
     operation_id="list_aic_experiments",
 )
