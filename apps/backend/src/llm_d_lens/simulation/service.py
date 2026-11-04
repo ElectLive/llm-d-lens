@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from llm_d_lens.db.dao.simulation_task import SimulationTaskDao
 from llm_d_lens.infrastructure.artifacts.store import artifact_uri, register_artifacts
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.storage.paths import storage_path
 
 from .backends import (
@@ -1202,7 +1203,7 @@ def _persist_optional_json(path: Path, payload: object | None) -> None:
     temporary = Path(f"{path}.{uuid.uuid4()}.tmp")
     try:
         temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
-        os.chmod(temporary, 0o600)
+        current_host().restrict_to_owner(temporary)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

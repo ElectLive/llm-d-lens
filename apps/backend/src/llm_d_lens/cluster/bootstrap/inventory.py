@@ -8,12 +8,12 @@ can be unit tested without any real SSH/Ansible/Kubespray involved.
 
 from __future__ import annotations
 
-import stat
 from pathlib import Path
 
 import yaml
 
 from llm_d_lens.cluster.bootstrap.models import BootstrapNode
+from llm_d_lens.infrastructure.hostos import current_host
 
 #: Pinned to match the Kubespray checkout this design targets (see
 #: ``docs/design/cluster-design.md#kubernetes-bootstrap`` section 4.1) so behaviour doesn't drift
@@ -188,7 +188,7 @@ def write_inventory(work_dir: Path, nodes: list[BootstrapNode], proxy: dict[str,
         for name, values in host_vars.items():
             host_vars_path = host_vars_dir / f"{name}.yml"
             host_vars_path.write_text(yaml.safe_dump(values, sort_keys=False))
-            host_vars_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600, mirrors _materialize_key
+            current_host().restrict_to_owner(host_vars_path)
 
     return inventory_path
 

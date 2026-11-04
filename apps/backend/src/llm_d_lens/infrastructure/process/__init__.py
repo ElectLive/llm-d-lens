@@ -27,6 +27,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from llm_d_lens.infrastructure.hostos import current_host
+
 
 def kubectl_cache_dir(kubeconfig: str | None) -> Path:
     """Resolve the isolated ``--cache-dir`` used for a given ``KUBECONFIG``.
@@ -35,7 +37,7 @@ def kubectl_cache_dir(kubeconfig: str | None) -> Path:
     invalidate the cache (e.g. right after installing new CRDs) compute the
     exact same path.
     """
-    resolved = kubeconfig or str(Path.home() / ".kube" / "config")
+    resolved = kubeconfig or str(current_host().default_kubeconfig())
     digest = hashlib.sha256(str(resolved).encode()).hexdigest()[:16]
     return Path.home() / ".llm-d-lens" / "kube-cache" / digest
 

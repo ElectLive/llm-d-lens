@@ -125,10 +125,9 @@ async function waitForVolumeReady(volumeId, { timeoutMs = 120000, intervalMs = 2
 
 
 export function CreateClusterWizard({ onClose, onCreated }) {
-    // The application database is configured once at install time (see
-    // scripts/LensInstaller-Ubuntu-x86_64.sh and
-    // llm_d_lens/db/bootstrap_cli.py), not here -- this is just a sanity
-    // check that surfaces a clear error if that step was ever skipped.
+    // The application database is configured once at install time by the
+    // online installer (see llm_d_lens/db/bootstrap_cli.py), not here -- this is
+    // just a sanity check that surfaces a clear error if that step was ever skipped.
     const [dbStatus, setDbStatus] = useState(null); // null while loading, else DatabaseStatus
     const [dbStatusError, setDbStatusError] = useState('');
     useEffect(() => {
@@ -703,17 +702,15 @@ export function CreateClusterWizard({ onClose, onCreated }) {
     }
 
     if (!dbStatus.configured) {
-        // The database is now configured once at install time (see
-        // scripts/LensInstaller-Ubuntu-x86_64.sh and
-        // llm_d_lens/db/bootstrap_cli.py) rather than lazily from this
-        // wizard, so reaching this should only ever happen if the installer
+        // The database is now configured once at install time by the online
+        // installer (see llm_d_lens/db/bootstrap_cli.py) rather than lazily from
+        // this wizard, so reaching this should only ever happen if the installer
         // was skipped or the bootstrap file was manually removed.
         return (
             <Modal isOpen onClose={onClose} title="Add a Kubernetes cluster" size="lg">
                 <div role="alert" className="flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-200">
                     <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                    Prism's database is not configured yet. Re-run the installer
-                    (<code>LensInstaller-Ubuntu-x86_64.sh</code>) to set it up, then reopen this wizard.
+                    Prism's database is not configured yet. Re-run the Lens installer to set it up, then reopen this wizard.
                 </div>
             </Modal>
         );

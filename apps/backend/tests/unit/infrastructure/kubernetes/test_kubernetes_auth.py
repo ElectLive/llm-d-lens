@@ -292,6 +292,6 @@ async def test_cleanup_bounds_pipe_drain(monkeypatch):
     )
     monkeypatch.setattr(auth, "_EXEC_CLEANUP_TIMEOUT", 0.01)
     if os.name == "posix":
-        monkeypatch.setattr(auth.os, "killpg", lambda *_: None)
+        monkeypatch.setattr(auth, "current_host", lambda: SimpleNamespace(signal_group=lambda *_args, **_kwargs: None))
     await asyncio.wait_for(auth._terminate_exec(process), 0.2)
     assert closed == [True]

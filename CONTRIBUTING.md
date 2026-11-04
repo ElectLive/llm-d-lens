@@ -62,8 +62,11 @@ The only public installation entry is
 download stage, installation engine and Shell release-version commands.
 After downloading the source archive, it invokes the archive's copy in internal
 source-install mode instead of downloading recursively.
-CI checks Shell syntax/lint, version consistency, standalone help and private
-Python provisioning on Ubuntu 22.04.
+CI checks Shell syntax/lint, version consistency, standalone help, private
+Python provisioning and the host OS layer command line (`check`, `info`,
+`packages missing`) on Ubuntu 22.04 with its system Python 3.10. It also checks
+the generated `lensctl.sh` with `bash -n` and shellcheck, and runs when the host
+OS layer source changes.
 
 ## Repository language
 

@@ -7,9 +7,7 @@ import contextlib
 import os
 import re
 import shlex
-import signal
 from datetime import UTC, datetime
-from pathlib import Path
 from urllib.parse import quote
 
 import httpx
@@ -19,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 from llm_d_lens.auth.access import current_principal, require_cluster_access
 from llm_d_lens.cluster.sessions import require_active_session
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.process import ShellClient
 
 router = APIRouter(prefix="/api/deploy-poc", include_in_schema=False)
@@ -87,7 +86,7 @@ def child_environment(request: Request, session_id=None) -> dict[str, str]:
     existing = os.environ.get("NO_PROXY") or os.environ.get("no_proxy", "")
     cluster = os.environ.get("PRISM_CLUSTER_NO_PROXY", "localhost,127.0.0.1,.svc,.cluster.local")
     no_proxy = ",".join(value for value in (existing, cluster) if value)
-    kubeconfig = os.environ.get("OPTIMALBENCH_KUBECONFIG", str(Path.home() / ".kube/config"))
+    kubeconfig = os.environ.get("OPTIMALBENCH_KUBECONFIG", str(current_host().default_kubeconfig()))
     if session_id:
         session = require_active_session(session_id)
         require_cluster_access(current_principal(request), session.server_id)
@@ -132,7 +131,7 @@ async def run_job(job: dict, executable: str, args: list[str], environment: dict
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
+            **current_host().group_spawn_kwargs(),
         )
 
         async def read_stream(stream):
@@ -158,13 +157,14 @@ async def run_job(job: dict, executable: str, args: list[str], environment: dict
         push_log(job, f"spawn error: {error}")
     finally:
         if process is not None and process.returncode is None:
+            host = current_host()
             with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGTERM)
+                host.signal_group(process.pid, force=False)
             try:
                 await asyncio.wait_for(process.wait(), 5)
             except TimeoutError:
                 with contextlib.suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
+                    host.signal_group(process.pid, force=True)
                 await process.wait()
         job["finishedAt"] = timestamp()
 

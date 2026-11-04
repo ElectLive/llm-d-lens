@@ -22,6 +22,7 @@ from llm_d_lens.cluster import registry, sessions
 from llm_d_lens.cluster.errors import ClusterOverviewError
 from llm_d_lens.cluster.settings import cluster_settings
 from llm_d_lens.hardware.registry import get_profile
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.kubernetes import PortForwardError, ensure_port_forward, run_kubectl, scoped_runner
 from llm_d_lens.infrastructure.process import CommandResult
 from llm_d_lens.monitoring.cluster_stack.discovery import discover_cluster_stack
@@ -1282,7 +1283,7 @@ def _register_cluster_session(cluster: registry.Cluster) -> sessions.ClusterSess
     destination = sessions.session_kubeconfig_path(session_id)
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     shutil.copyfile(source, destination)
-    os.chmod(destination, 0o600)
+    current_host().restrict_to_owner(destination)
     return sessions.register_session(cluster.id, destination, session_id)
 
 

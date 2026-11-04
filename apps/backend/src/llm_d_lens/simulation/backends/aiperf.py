@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import math
 import os
 import sys
@@ -11,6 +10,7 @@ from functools import singledispatchmethod
 from pathlib import Path
 from typing import ClassVar
 
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.process import run_sync, which
 from llm_d_lens.infrastructure.storage.paths import storage_path
 
@@ -211,10 +211,11 @@ class AIPerfBackend(CommandBackend):
     @staticmethod
     def managed_executable_path() -> Path:
         # Do not resolve symlinks: in a venv ``sys.executable`` is often a
-        # symlink chain to the base interpreter (e.g. .venv/bin/python ->
-        # /usr/bin/python3). pip installs console scripts into
-        # ``<venv>/bin``, so resolving would point at the wrong directory.
-        return Path(sys.executable).parent / "aiperf"
+        # symlink chain to the base interpreter (e.g. a venv's python ->
+        # /usr/bin/python3). pip installs console scripts into the venv's
+        # executable directory, so resolving would point at the wrong one.
+        # ``Path(sys.executable).parent.parent`` is the current virtualenv root.
+        return current_host().venv_executable(Path(sys.executable).parent.parent, "aiperf")
 
     def descriptor(self) -> BackendDescriptor:
         executable = self.executable
@@ -243,7 +244,7 @@ class AIPerfBackend(CommandBackend):
         lock_root = cache / cls.name
         lock_root.mkdir(parents=True, exist_ok=True)
         with lock_root.joinpath(".install.lock").open("w", encoding="utf-8") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            current_host().try_lock(lock)
             if destination.is_file():
                 return
             try:

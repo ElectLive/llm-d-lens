@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import quote
 
 from kubernetes.aio.client.exceptions import ApiException
+
+from llm_d_lens.infrastructure.hostos import current_host
 
 
 @dataclass(frozen=True)
@@ -81,7 +82,7 @@ async def api_session(kubeconfig: str | None = None, *, pooled: bool = True):
     from llm_d_lens.infrastructure.kubernetes.auth import cleanup_configuration, load_configuration
     from llm_d_lens.infrastructure.kubernetes.pool import pooled_client
 
-    configuration, context = await load_configuration(kubeconfig or str(Path.home() / ".kube/config"))
+    configuration, context = await load_configuration(kubeconfig or str(current_host().default_kubeconfig()))
     if pooled:
         async with pooled_client(configuration) as api:
             yield api, context

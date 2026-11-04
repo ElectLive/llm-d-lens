@@ -19,6 +19,8 @@ from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 from uuid import uuid4
 
+from llm_d_lens.infrastructure.hostos import current_host
+
 _LOCK = threading.RLock()
 _COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 RETENTION_CLASSES = frozenset({"configuration", "evidence", "diagnostic", "cache"})
@@ -160,7 +162,7 @@ def register_artifacts(
         temporary = target.with_name(f".{target.name}.{uuid4()}.tmp")
         try:
             with temporary.open("x", encoding="utf-8") as stream:
-                os.chmod(temporary, 0o600)
+                current_host().restrict_to_owner(temporary)
                 json.dump(manifest, stream, ensure_ascii=False, indent=2)
                 stream.write("\n")
                 stream.flush()

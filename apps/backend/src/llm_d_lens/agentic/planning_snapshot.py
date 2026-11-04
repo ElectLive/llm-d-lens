@@ -15,6 +15,7 @@ from uuid import uuid4
 from pydantic import TypeAdapter
 
 from llm_d_lens.ai_providers.client import AIRequestRecord, capture_ai_requests
+from llm_d_lens.infrastructure.hostos import current_host
 
 from .models import AgenticDeploymentRun
 from .planner import PlanningFacts
@@ -70,7 +71,7 @@ class PlanningSnapshotStore:
         temporary = destination.with_name(f".{destination.name}.{uuid4()}.tmp")
         try:
             with temporary.open("x", encoding="utf-8") as stream:
-                os.chmod(temporary, 0o600)
+                current_host().restrict_to_owner(temporary)
                 json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
                 stream.write("\n")
                 stream.flush()

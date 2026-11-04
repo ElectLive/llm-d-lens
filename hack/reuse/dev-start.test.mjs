@@ -29,7 +29,18 @@ test('installed controller refuses startup when the Python MCP catalog fails', t
     'test', resolve('scripts/LensInstaller-Ubuntu-x86_64-online.sh'), root]);
   execFileSync('bash', ['-n', join(root, 'lensctl.sh')]);
   put('.lens-install.env', 'APP_PORT=49191\nBACKEND_PORT=8081\nENABLE_HTTPS=0\n');
-  put('.venv/bin/python', '#!/usr/bin/env bash\nexit 1\n');
+  put('.venv/bin/python', `#!/usr/bin/env bash
+if [[ "$1" == -m && "$2" == llm_d_lens.infrastructure.hostos ]]; then
+  case "$3" in
+    check) exit 0 ;;
+    port-in-use) exit 1 ;;
+    free-port) printf '%s\\n' "$5"; exit 0 ;;
+    lan-ip) exit 0 ;;
+    *) exit 0 ;;
+  esac
+fi
+exit 1
+`);
   chmodSync(join(root, '.venv/bin/python'), 0o755);
   const result = spawnSync('bash', [join(root, 'lensctl.sh'), 'start'], {
     encoding: 'utf8',

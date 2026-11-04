@@ -3,7 +3,7 @@
 This used to be a mandatory gate inside ``CreateClusterWizard.jsx`` (the
 first time the wizard opened with no database configured yet, it would
 block on an in-wizard setup form). Per user request, that setup has moved
-to install time instead: ``scripts/LensInstaller-Ubuntu-x86_64-online.sh`` calls
+to install time instead: the online installer calls
 this module (via ``python -m llm_d_lens.db.bootstrap_cli``) once, right
 after the Python virtualenv is provisioned and before the backend is ever
 started, so the wizard can simply assume the database is already

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import hashlib
 import json
 import math
@@ -19,6 +18,7 @@ from pathlib import Path
 from typing import ClassVar
 from urllib.parse import urlparse
 
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.process import run_sync, which
 from llm_d_lens.infrastructure.storage.paths import storage_path
 
@@ -195,7 +195,10 @@ class TraceReplayerBackend(CommandBackend):
     @classmethod
     def managed_executable_path(cls) -> Path:
         cache = storage_path("cache", "backends")
-        return cache / cls.name / cls.REVISION / "bin" / cls.name
+        # Cargo ``--root`` installs binaries under ``<root>/bin``; this is not a
+        # virtualenv layout.
+        root = cache / cls.name / cls.REVISION
+        return root / "bin" / f"{cls.name}{current_host().tool_platform('go').exe_suffix}"
 
     def descriptor(self) -> BackendDescriptor:
         executable = self.executable
@@ -230,7 +233,7 @@ class TraceReplayerBackend(CommandBackend):
         destination.parent.mkdir(parents=True, exist_ok=True)
         lock_path = destination.parents[1] / ".install.lock"
         with lock_path.open("w", encoding="utf-8") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            current_host().try_lock(lock)
             if destination.is_file():
                 return
             cargo = which("cargo")
@@ -264,11 +267,11 @@ class TraceReplayerBackend(CommandBackend):
                     timeout=1800,
                     env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
                 )
-                installed = temporary / "bin" / "client"
+                installed = temporary / "bin" / f"client{current_host().tool_platform('go').exe_suffix}"
                 if result.returncode != 0 or not installed.is_file():
                     detail = (result.stderr or result.stdout or "cargo install failed").strip()
                     raise SimulationConfigurationError(f"Unable to install Trace-Replayer: {detail[-2000:]}")
-                installed.chmod(0o755)
+                current_host().make_executable(installed, private=False)
                 os.replace(installed, destination)
             except TimeoutError as error:
                 raise SimulationConfigurationError("Trace-Replayer installation timed out after 30 minutes") from error
@@ -434,7 +437,7 @@ class TraceReplayerBackend(CommandBackend):
                 trace.path.open("r", encoding="utf-8") as input_file,
                 temporary.open("x", encoding="utf-8") as output_file,
             ):
-                os.chmod(temporary, 0o600)
+                current_host().restrict_to_owner(temporary)
                 for line_number, line in enumerate(input_file, 1):
                     if not line.strip():
                         continue

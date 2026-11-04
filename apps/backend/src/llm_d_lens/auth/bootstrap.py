@@ -22,6 +22,7 @@ from pathlib import Path
 from llm_d_lens.auth.records import UserRoleBindingRecord
 from llm_d_lens.auth.service import AuthService, validate_password_strength
 from llm_d_lens.auth.settings import AuthSettings
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.storage.paths import storage_path
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ def write_operator_credentials(username: str, password: str) -> Path:
         f"password={password}\n",
         encoding="utf-8",
     )
-    path.chmod(0o600)
+    current_host().restrict_to_owner(path)
     return path
 
 

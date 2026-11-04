@@ -15,7 +15,6 @@ publication across concurrent requests and processes.
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import hashlib
 import logging
 import re
@@ -25,6 +24,7 @@ from tempfile import TemporaryDirectory
 from threading import Lock
 from typing import Literal
 
+from llm_d_lens.infrastructure.hostos import current_host
 from llm_d_lens.infrastructure.process import run_sync
 from llm_d_lens.infrastructure.storage.paths import storage_path
 
@@ -67,7 +67,7 @@ def _download_snapshot(repo: RepoName, ref: str) -> Path:
     root = destination.parent
     root.mkdir(parents=True, exist_ok=True)
     with (root / "download.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        current_host().try_lock(lock)
         if _COMMIT.fullmatch(ref) and (destination / ".git").is_dir():
             return destination
         mirror = root / "mirror.git"
