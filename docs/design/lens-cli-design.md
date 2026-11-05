@@ -578,32 +578,3 @@ under another command.
 `sources`, `import`, PR-ref rollouts and `--switch-stack` go beyond the
 roadmap's operation list. They serve teams that already deploy guides by hand
 and want to test llm-d changes before they merge.
-
-## 14. Review and rollout
-
-1. **Review this PR.** Settle the open points below in review comments.
-2. **Decide in team sync.** Record the decision here (`Status: accepted`, date,
-   who decided) and merge.
-3. **Implement in small PRs**, one per proposed change, each linking this doc:
-   records + enums, schema + `llmd schema`, JSON errors, typed results.
-4. **Keep it current.** Any PR that changes the record's shape updates this doc
-   and the schema file in the same change; the schema test enforces the second.
-
-Open points for reviewers:
-
-- [ ] Keep camelCase JSON keys (as stored today) with snake_case Python fields,
-  or switch storage to snake_case under `v2`?
-- [ ] Enforce phase transitions on write (refuse) or only log a warning?
-- [ ] Should `llmd list` keep showing unreadable records as `phase: Invalid`, or
-  report them separately?
-- [ ] Is a `jsonschema` dev dependency acceptable, or should the schema test
-  compare by hand?
-- [ ] **Command name.** The repository layout design names the CLI `lens`; #107
-  adds `llmd` beside it, and `lens` still only prints its help. The roadmap
-  writes `<cli>`. Which name carries the roadmap operations, including `serve`?
-- [ ] **`check` as its own command.** Expose the preflight checks as `check`,
-  and where do the admin mode and quota checks go?
-- [ ] **`update` versus `rollouts`.** Does `rollouts` become `update`, and does a
-  snapshot need more than `rollout.previous`?
-- [ ] **Backend migration.** When do `apps/backend` guide deployments move onto
-  the engine?
