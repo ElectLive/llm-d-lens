@@ -51,6 +51,8 @@ import `llm_d_lens`, FastAPI, the database layer or auth.
 
 Keep domain rules in their domain; shared modules must not depend on pages.
 For application file lifecycle changes, read [storage layout](docs/design/storage-layout.md).
+For engine state (instance records, phases, the CLI JSON contract), read the
+[CLI state model](docs/design/cli-state-model.md).
 Generated files, dependencies and runtime data are not implementation sources.
 Fix catalog references when moving or removing a registered entry. Adding a feature
 does not require catalog registration. Catalog expansion is explicit maintenance;

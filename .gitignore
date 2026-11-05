@@ -67,6 +67,7 @@ docs/design/*
 !docs/design/repository-layout.md
 !docs/design/reuse-workflow.md
 !docs/design/capacity-planner-integration-design.md
+!docs/design/cli-state-model.md
 !docs/prism-cleanup.md
 !docs/superpowers/
 docs/superpowers/*

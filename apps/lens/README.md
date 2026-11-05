@@ -15,7 +15,8 @@ A *stack* is what a team deploys into one namespace:
 - manifest files, read as they are.
 
 An *instance* is a stack running in a namespace. It is recorded in a ConfigMap `lens-instance-<name>` in that
-namespace, so every command works from any machine.
+namespace, so every command works from any machine. The record's fields and phases are described in the
+[CLI state model](../../docs/design/cli-state-model.md).
 
 `llmd` is part of the Lens engine package (`apps/lens`). It is pure Python and depends only on PyYAML. It
 does not need the Lens service, its database or Node.
