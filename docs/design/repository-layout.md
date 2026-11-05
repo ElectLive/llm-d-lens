@@ -139,6 +139,8 @@ where they are; they are already hidden.
 - Directory names `apps/lens`, `deploy/` and `hack/`. The engine directory is
   named after its package rather than a role (`engine`, `core`).
 - The CLI command is also `lens` (console script `lens = lens.__main__:main`).
+  The namespace-scoped `llmd` command was added beside it later; see the
+  [Lens CLI design](lens-cli-design.md).
 - `apps/lens` uses a flat layout (`apps/lens/lens/`), avoiding a
   `apps/lens/src/` double nesting.
 - `scripts/` and `tools/` merge into one `hack/` directory. File names do not
