@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: decode
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      llm-d.ai/role: decode
+  template:
+    metadata:
+      labels:
+        llm-d.ai/role: decode
+    spec:
+      serviceAccountName: sa
+      containers:
+        - name: modelserver
+          image: registry.example.invalid/vllm:v1
+          args: ["Qwen/Qwen3-0.6B", "--port=8000"]
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: llm-d-hf-token
+                  key: HF_TOKEN
+          resources:
+            limits:
+              nvidia.com/gpu: "1"

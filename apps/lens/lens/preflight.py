@@ -1,0 +1,320 @@
+"""Read-only checks of a plan against the cluster. Nothing here changes the cluster.
+
+* the namespace exists and the cluster serves every API the stack uses;
+* the user may get, list, create, patch and delete what the plan applies;
+* the prerequisites (Secrets, claims, ServiceAccounts, network attachments) are present; a
+  Secret only a monitor scrapes with is a warning, since the stack serves without it;
+* every object either does not exist yet or belongs to this instance: llmd never overwrites
+  an object it did not create (``import`` records such objects instead);
+* the server accepts the objects (a server-side dry run). A server dry run stores nothing, so a
+  RoleBinding to a Role the same plan creates is refused there for a user without the RBAC
+  ``bind`` verb (its Role is not found), though the standup creates the Role first. Such a
+  binding is left out of the dry run: the Role is in it, which shows the user holds its rules,
+  and the permission check covers creating the binding.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import replace
+from typing import Any
+
+from . import inventory
+from .errors import CommandError
+from .kube import Kube
+from .model import (
+    INSTANCE_LABEL,
+    KEPT_KINDS,
+    MANAGED_BY_LABEL,
+    MANAGED_BY_VALUE,
+    Finding,
+    api_group,
+    object_ref,
+)
+from .plan import Plan
+from .policy import MONITOR_KINDS
+
+#: Prerequisite kind -> (apiVersion, kubectl resource).
+PREREQUISITES = {
+    "Secret": ("v1", "secrets"),
+    "ConfigMap": ("v1", "configmaps"),
+    "ServiceAccount": ("v1", "serviceaccounts"),
+    "PersistentVolumeClaim": ("v1", "persistentvolumeclaims"),
+    "Role": ("rbac.authorization.k8s.io/v1", "roles.rbac.authorization.k8s.io"),
+    "NetworkAttachmentDefinition": ("k8s.cni.cncf.io/v1", "network-attachment-definitions.k8s.cni.cncf.io"),
+}
+
+
+def preflight(kube: Kube, plan: Plan, *, existing: str = "refuse") -> None:
+    """Check ``plan`` against the cluster and add findings to it.
+
+    ``existing`` says what the plan is for: ``refuse`` (standup: an object that is already there
+    but not this instance's is an error), ``import`` (the objects run already and are only
+    recorded), or ``rollout`` (the instance's own objects change; no dry run of the whole stack,
+    the rollout applies only what changed)."""
+    findings = plan.findings
+    plan.cluster["context"] = kube.current_context()
+    plan.cluster["user"] = kube.whoami()
+    state = kube.namespace_state(plan.namespace)
+    plan.cluster["namespace"] = state
+    if state == "missing":
+        findings.append(
+            Finding(
+                "error",
+                "namespace-missing",
+                f"namespace {plan.namespace} does not exist",
+                hint="llmd never creates namespaces; ask an administrator to create it.",
+            )
+        )
+        return
+    if not _check_apis(kube, plan):
+        return
+    if existing == "import":
+        _observe_only(plan)
+    _check_permissions(kube, plan, write=existing != "import")
+    _check_prerequisites(kube, plan)
+    _check_existing(kube, plan, existing)
+    if plan.blocking or existing in ("import", "rollout"):
+        plan.cluster["dryRun"] = "skipped"
+        return
+    deferred = _bindings_to_planned_roles(plan.documents)
+    try:
+        kube.apply([doc for doc in plan.documents if doc not in deferred], plan.namespace, dry_run=True)
+        plan.cluster["dryRun"] = "passed"
+        for document in deferred:
+            ref = object_ref(document)
+            findings.append(
+                Finding(
+                    "info",
+                    "dry-run-deferred",
+                    f"{ref} is checked by permission only: its Role is created by the same standup, and a "
+                    "server dry run does not store it",
+                    object=ref,
+                )
+            )
+    except CommandError as error:
+        plan.cluster["dryRun"] = "failed"
+        findings.append(Finding("error", "dry-run-failed", error.message, hint=error.hint or ""))
+
+
+def _bindings_to_planned_roles(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    roles = {doc["metadata"]["name"] for doc in documents if doc["kind"] == "Role"}
+    return [
+        doc
+        for doc in documents
+        if doc["kind"] == "RoleBinding"
+        and (doc.get("roleRef") or {}).get("kind") == "Role"
+        and (doc.get("roleRef") or {}).get("name") in roles
+    ]
+
+
+def _check_apis(kube: Kube, plan: Plan) -> bool:
+    missing = sorted(
+        {
+            f"{doc['apiVersion']} {doc['kind']}"
+            for doc in plan.documents
+            if kube.resource(doc["apiVersion"], doc["kind"]) is None
+        }
+    )
+    for item in missing:
+        plan.findings.append(
+            Finding(
+                "error",
+                "api-missing",
+                f"the cluster does not serve {item}",
+                hint="An administrator installs the CRD or operator that serves it.",
+            )
+        )
+    return not missing
+
+
+def resources(kube: Kube, plan: Plan) -> list[str]:
+    """The kubectl resource name of each planned object, in plan order."""
+    return [kube.resource_name(doc) for doc in plan.documents]
+
+
+#: Findings that guard what an apply would create. An import applies nothing, so for an import
+#: they describe the running stack and do not block.
+APPLY_ONLY = {"privileged", "host-path", "host-namespace", "scc-binding", "cluster-scoped"}
+
+
+def _observe_only(plan: Plan) -> None:
+    plan.policy.findings[:] = [
+        replace(finding, severity="info") if finding.code in APPLY_ONLY else finding for finding in plan.findings
+    ]
+
+
+def _check_permissions(kube: Kube, plan: Plan, *, write: bool = True) -> None:
+    """What the user must be allowed: for a standup, to change every kind the plan applies; for an
+    import, only to read them and to write the instance's record (a ConfigMap)."""
+    names = sorted({*resources(kube, plan), "configmaps"})
+    if write:
+        checks = [(verb, name, "error") for name in names for verb in ("get", "list", "create", "patch")]
+        checks += [("delete", name, "warning") for name in names]
+    else:
+        checks = [(verb, name, "error") for name in names for verb in ("get", "list")]
+        checks += [(verb, "configmaps", "error") for verb in ("create", "patch")]
+    checks += [("get", "pods", "error"), ("list", "pods", "error")]
+    reviews = [(verb, name.partition(".")[2], name.partition(".")[0], plan.namespace) for verb, name, _ in checks]
+    denied: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for (verb, name, severity), allowed in zip(checks, kube.access_reviews(reviews), strict=True):
+        if allowed is False:
+            denied[(severity, verb)].append(name)
+    plan.cluster["permissions"] = "ok" if not denied else {verb: items for (_, verb), items in denied.items()}
+    for (severity, verb), items in sorted(denied.items()):
+        listed = ", ".join(sorted(items))
+        if severity == "error":
+            message = f"you cannot {verb} {listed} in {plan.namespace}"
+            hint = "Ask a namespace administrator for a Role that allows it."
+        else:
+            message = f"you cannot delete {listed} in {plan.namespace}; a teardown would be incomplete"
+            hint = ""
+        plan.findings.append(
+            Finding(severity, f"permission-{verb if severity == 'warning' else 'denied'}", message, hint=hint)
+        )
+
+
+def _check_prerequisites(kube: Kube, plan: Plan) -> None:
+    for item in plan.policy.prerequisites:
+        api_version, resource = PREREQUISITES.get(item["kind"], ("", ""))
+        if not resource or kube.resource(api_version, item["kind"]) is None:
+            item["state"] = "unknown"
+            continue
+        try:
+            item["state"] = "present" if kube.get(resource, item["name"], plan.namespace) else "missing"
+        except CommandError:
+            item["state"] = "unverified"
+            continue
+        if item["state"] == "missing" and _only_monitors(item):
+            # Only a scrape needs it: the stack serves without it, but its metrics stay empty.
+            plan.findings.append(
+                Finding(
+                    "warning",
+                    "monitor-secret-missing",
+                    f"{item['kind']}/{item['name']} is missing in {plan.namespace}: "
+                    f"{', '.join(item['usedBy'])} cannot scrape without it, so its metrics stay empty",
+                    object=f"{item['kind']}/{item['name']}",
+                    hint="Create it, or ask the namespace's administrator.",
+                )
+            )
+        elif item["state"] == "missing":
+            plan.findings.append(
+                Finding(
+                    "error",
+                    "prerequisite-missing",
+                    f"{item['kind']}/{item['name']} must already exist in {plan.namespace}",
+                    object=f"{item['kind']}/{item['name']}",
+                    hint=f"Used by {', '.join(item['usedBy'])}. Create it first, or ask the namespace's administrator.",
+                )
+            )
+
+
+def _only_monitors(item: dict[str, Any]) -> bool:
+    return all(user.split("/", 1)[0] in MONITOR_KINDS for user in item["usedBy"])
+
+
+def _check_existing(kube: Kube, plan: Plan, existing: str) -> None:
+    """Who owns each planned object today."""
+    record = inventory.read(kube, plan.namespace, plan.instance)
+    if record and inventory.management(record) == inventory.IMPORTED and existing != "import":
+        plan.findings.append(
+            Finding(
+                "error",
+                "instance-imported",
+                f"instance {plan.instance} was imported from another deployment workflow",
+                hint="Change it with `llmd rollouts`, or stop managing it with "
+                f"`llmd teardown {plan.instance} --forget`.",
+            )
+        )
+    owned = {(item["kind"], item["name"]) for item in (record or {}).get("objects") or []}
+    if existing == "refuse":
+        _check_stack(plan, record)
+        _list_prunes(kube, plan, record)
+    counts = {"create": 0, "update": 0, "foreign": 0}
+    found: list[dict[str, Any]] = []
+    for document, resource in zip(plan.documents, resources(kube, plan), strict=True):
+        live = kube.get(resource, document["metadata"]["name"], plan.namespace)
+        if live is None:
+            counts["create"] += 1
+            continue
+        labels = (live.get("metadata") or {}).get("labels") or {}
+        ours = labels.get(INSTANCE_LABEL) == plan.instance and labels.get(MANAGED_BY_LABEL) == MANAGED_BY_VALUE
+        if ours or (document["kind"], document["metadata"]["name"]) in owned:
+            counts["update"] += 1
+            continue
+        counts["foreign"] += 1
+        found.append({"object": object_ref(document), "group": api_group(document["apiVersion"])})
+        if existing == "refuse":
+            owner = f"instance {labels[INSTANCE_LABEL]}" if labels.get(INSTANCE_LABEL) else "another tool or user"
+            plan.findings.append(
+                Finding(
+                    "error",
+                    "object-exists",
+                    f"{object_ref(document)} already exists and belongs to {owner}",
+                    object=object_ref(document),
+                    hint="llmd never overwrites objects it did not create. If this stack was deployed with "
+                    "`kubectl apply` or Helm, record it with `llmd import` instead.",
+                )
+            )
+    plan.cluster["objects"] = counts
+
+
+def _check_stack(plan: Plan, record: dict[str, Any] | None) -> None:
+    """An instance runs one stack: a standup of another stack path is refused unless --switch-stack."""
+    running = ((record or {}).get("stack") or {}).get("id")
+    if not running or running == plan.stack.id:
+        return
+    plan.cluster["switchStack"] = {"from": running, "to": plan.stack.id}
+    if plan.options.switch_stack:
+        plan.findings.append(
+            Finding(
+                "warning",
+                "stack-switched",
+                f"instance {plan.instance} moves from stack {running} to {plan.stack.id}; later standups "
+                f"and rollouts follow {plan.stack.id}",
+            )
+        )
+        return
+    plan.findings.append(
+        Finding(
+            "error",
+            "stack-differs",
+            f"instance {plan.instance} runs stack {running}, not {plan.stack.id}",
+            hint="Pass --switch-stack to move it to this stack in place, tear it down first, or stand this "
+            "stack up under another --name.",
+        )
+    )
+
+
+def _list_prunes(kube: Kube, plan: Plan, record: dict[str, Any] | None) -> None:
+    """What a standup would delete: the instance's recorded objects the stack no longer renders
+    that are still this instance's. Claims are kept."""
+    if not record or inventory.management(record) == inventory.IMPORTED:
+        return
+    planned = {(doc["kind"], doc["metadata"]["name"]) for doc in plan.documents}
+    prunes, kept = [], []
+    for item in record.get("objects") or []:
+        if (item["kind"], item["name"]) in planned:
+            continue
+        ref = f"{item['kind']}/{item['name']}"
+        if item["kind"] in KEPT_KINDS:
+            kept.append(ref)
+            continue
+        live = kube.get(item["resource"], item["name"], plan.namespace)
+        labels = ((live or {}).get("metadata") or {}).get("labels") or {}
+        if labels.get(INSTANCE_LABEL) == plan.instance and labels.get(MANAGED_BY_LABEL) == MANAGED_BY_VALUE:
+            prunes.append(ref)
+    plan.cluster["prune"] = prunes
+    if prunes:
+        plan.findings.append(
+            Finding(
+                "warning",
+                "prune",
+                f"standup deletes {len(prunes)} object(s) of instance {plan.instance} the stack no longer "
+                f"renders: {', '.join(prunes)}",
+            )
+        )
+    for ref in kept:
+        plan.findings.append(
+            Finding("info", "prune-kept", f"{ref} is no longer rendered; standup keeps it (a claim)", object=ref)
+        )

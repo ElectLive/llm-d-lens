@@ -1,0 +1,84 @@
+# A guide in llm-d's guide.yaml form: one router chart, one model server overlay per variant.
+name: demo-baseline
+
+support:
+  engines: {vllm: vLLM}
+  accelerators:
+    gpu:
+      label: NVIDIA GPU
+      model: Qwen/Qwen3-0.6B
+      providers:
+        - {name: base, label: "Kubernetes (base)"}
+      engines: {vllm: validated}
+
+env:
+  static:
+    REPO_ROOT: $(realpath $(git rev-parse --show-toplevel))
+    GUIDE_NAME: demo-baseline
+    NAMESPACE: llm-d-demo-baseline
+    MONITORING: {default: "false", values: ["false", "true"]}
+    MONITORING_VALUES: {default: ""}
+    ACCELERATOR_TYPE: {default: gpu, values: [gpu]}
+    MODEL_SERVER: {default: vllm, values: [vllm]}
+    INFRA_PROVIDER: {default: base, values: [base, ocp]}
+    MODEL: {default: "Qwen/Qwen3-0.6B"}
+    HF_TOKEN: {default: HF_TOKEN_PLACEHOLDER, sensitive: true}
+  source: ["${REPO_ROOT}/guides/env.sh # defines the router chart"]
+
+prerequisites:
+  clone:
+    - skip_in: [ci]
+      run: |
+        git clone https://github.com/llm-d/llm-d.git && cd llm-d
+  gaie:
+    - run: |
+        kubectl apply -f https://github.com/kubernetes-sigs/gateway-api-inference-extension/${GAIE_URL}/v1-manifests.yaml
+  namespace:
+    - run: kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+  secrets:
+    - skip_in: [ci]
+      run: |
+        kubectl create secret generic llm-d-hf-token \
+          --from-literal="HF_TOKEN=${HF_TOKEN}" \
+          --namespace "${NAMESPACE}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+deploy:
+  router_values:
+    - run: |
+        export ROUTER_BASE_VALUES="${REPO_ROOT}/guides/recipes/router/base.values.yaml"
+        export ROUTER_VALUES="${REPO_ROOT}/guides/${GUIDE_NAME}/router/${GUIDE_NAME}.values.yaml"
+  monitoring_values:
+    - when: {MONITORING: ["true"]}
+      run: export MONITORING_VALUES="-f ${REPO_ROOT}/guides/recipes/router/monitoring.values.yaml"
+  standalone:
+    - run: |
+        helm install ${GUIDE_NAME} \
+          ${ROUTER_STANDALONE_CHART} \
+          -f ${ROUTER_BASE_VALUES} \
+          ${MONITORING_VALUES} \
+          -f ${ROUTER_VALUES} \
+          -n ${NAMESPACE} --version ${ROUTER_CHART_VERSION}
+  gateway:
+    - run: |
+        helm install ${GUIDE_NAME} oci://registry.example.invalid/charts/router-gateway \
+          -f ${ROUTER_BASE_VALUES} -n ${NAMESPACE}
+  modelserver:
+    standard:
+      - run: |
+          kubectl apply -n ${NAMESPACE} \
+            -k ${REPO_ROOT}/guides/${GUIDE_NAME}/modelserver/${ACCELERATOR_TYPE}/${MODEL_SERVER}/${INFRA_PROVIDER}/
+    dynamic_slice:
+      - skip_in: [ci]
+        run: |
+          kubectl apply -n ${NAMESPACE} -k ${REPO_ROOT}/guides/${GUIDE_NAME}/modelserver/${ACCELERATOR_TYPE}/${MODEL_SERVER}/2x2x1/
+
+verify:
+  endpoint:
+    standalone:
+      - run: export IP=$(kubectl get service ${GUIDE_NAME}-epp -n ${NAMESPACE} -o jsonpath='{.spec.clusterIP}')
+    gateway:
+      - run: export IP=$(kubectl get gateway llm-d-inference-gateway -n ${NAMESPACE} -o jsonpath='{.status.addresses[0].value}')
+
+cleanup:
+  - run: helm uninstall ${GUIDE_NAME} -n ${NAMESPACE}

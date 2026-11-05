@@ -1,0 +1,18 @@
+# A P/D guide: the model server is one DisaggregatedSet, rolled in place by lws.
+name: demo-pd
+
+env:
+  static:
+    REPO_ROOT: $(realpath $(git rev-parse --show-toplevel))
+    GUIDE_NAME: demo-pd
+    NAMESPACE: llm-d-demo-pd
+    ACCELERATOR_TYPE: {default: gpu, values: [gpu]}
+    MODEL_SERVER: {default: vllm, values: [vllm]}
+    INFRA_PROVIDER: {default: base, values: [base]}
+  source: ["${REPO_ROOT}/guides/env.sh"]
+
+deploy:
+  modelserver:
+    - run: |
+        kubectl apply -n ${NAMESPACE} \
+          -k ${REPO_ROOT}/guides/${GUIDE_NAME}/modelserver/${ACCELERATOR_TYPE}/${MODEL_SERVER}/${INFRA_PROVIDER}/

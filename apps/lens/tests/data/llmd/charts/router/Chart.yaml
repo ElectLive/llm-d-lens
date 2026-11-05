@@ -1,0 +1,4 @@
+apiVersion: v2
+name: router
+version: 0.1.0
+description: A small stand-in for the llm-d router chart

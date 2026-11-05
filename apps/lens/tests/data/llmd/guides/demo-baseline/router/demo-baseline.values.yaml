@@ -1,0 +1,4 @@
+router:
+  modelServers:
+    matchLabels:
+      llm-d.ai/guide: demo-baseline

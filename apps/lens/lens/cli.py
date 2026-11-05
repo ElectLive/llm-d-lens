@@ -1,0 +1,101 @@
+"""llmd: plan, stand up, roll out, and remove llm-d guides inside one namespace.
+
+A stack is an llm-d guide (``guides/<guide>``, deployed the way its README's commands deploy
+it), one kustomize directory, or manifest files of an llm-d checkout. `llmd plan` shows what
+`llmd standup` would change, without changing anything.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+from . import __version__
+from .commands import Context, Handler
+from .commands import importing as import_command
+from .commands import plan as plan_command
+from .commands import render as render_command
+from .commands import rollouts as rollouts_command
+from .commands import sources as sources_command
+from .commands import stacks as stacks_command
+from .commands import standup as standup_command
+from .commands import status as status_command
+from .commands import teardown as teardown_command
+from .errors import LlmdError
+
+EXAMPLES = """\
+examples:
+  llmd sources add llm-d https://github.com/llm-d/llm-d.git#main
+  llmd sources add llm-d-local /path/to/llm-d
+  llmd sources list
+  llmd stacks                                                  # the guides of the source
+  llmd stacks optimized-baseline                               # a guide's variables and steps
+  llmd render optimized-baseline --var INFRA_PROVIDER=ocp      # the objects its steps apply
+  llmd plan optimized-baseline -n <namespace> --offline
+  llmd plan optimized-baseline --var INFRA_PROVIDER=ocp        # namespace from the kube context
+  llmd standup optimized-baseline --var INFRA_PROVIDER=ocp --expected-digest <digest from plan> --wait
+  llmd import optimized-baseline --dry-run       # a guide deployed with its README's commands
+  llmd import optimized-baseline                 # record it; nothing on it changes
+  llmd rollouts plan pd-disaggregation --name <instance> \\
+      --source https://github.com/llm-d/llm-d.git#refs/pull/<N>/head
+  llmd list
+  llmd status <instance>
+  llmd teardown <instance>
+"""
+
+#: Modules that add subcommands, in the order ``--help`` lists them.
+COMMAND_MODULES = [
+    sources_command,
+    stacks_command,
+    render_command,
+    plan_command,
+    standup_command,
+    import_command,
+    rollouts_command,
+    status_command,
+    teardown_command,
+]
+
+
+def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
+    parser = argparse.ArgumentParser(
+        prog="llmd",
+        description=__doc__,
+        epilog=EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--version", action="version", version=f"llmd {__version__}")
+    parser.add_argument("-o", "--output", choices=["text", "json", "yaml"], default="text")
+    parser.add_argument(
+        "--state-dir",
+        default=os.environ.get("LLMD_STATE_DIR", ""),
+        help="local state directory: registered sources (env LLMD_STATE_DIR)",
+    )
+    commands = parser.add_subparsers(dest="command", metavar="COMMAND")
+    handlers: dict[str, Handler] = {}
+    for module in COMMAND_MODULES:
+        handlers.update(module.register(commands))
+    return parser, handlers
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser, handlers = build_parser()
+    args = parser.parse_args(sys.argv[1:] if argv is None else list(argv))
+    if not args.command:
+        parser.print_help()
+        return 2
+    try:
+        return handlers[args.command](Context(args))
+    except LlmdError as error:
+        print(f"error: {error.message}", file=sys.stderr)
+        if error.hint:
+            print(f"hint: {error.hint}", file=sys.stderr)
+        if isinstance(error.details, list):
+            for item in error.details[:20]:
+                if isinstance(item, dict) and item.get("message"):
+                    print(f"  - {item['message']}", file=sys.stderr)
+        return error.exit_code
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        return 130

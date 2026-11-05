@@ -8,10 +8,11 @@ build-backend = "setuptools.build_meta"
 name = "llm-d-lens-engine"
 version = "0.0.1"
 description = "llm-d Lens engine and CLI"
+readme = "README.md"
 requires-python = ">=3.11"
 # Keep this list minimal: the engine must install without the server's stack
 # (FastAPI, database, auth). See docs/design/repository-layout.md.
-dependencies = []
+dependencies = ["PyYAML>=6,<7"]
 
 [project.optional-dependencies]
 dev = [
@@ -21,9 +22,11 @@ dev = [
 
 [project.scripts]
 lens = "lens.__main__:main"
+llmd = "lens.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["lens*"]
+exclude = ["tests*"]
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"

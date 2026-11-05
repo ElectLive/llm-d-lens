@@ -1,0 +1,9 @@
+router:
+  epp:
+    replicas: 1
+  modelServers:
+    matchLabels: {}
+  monitoring:
+    prometheus:
+      auth:
+        enabled: true
