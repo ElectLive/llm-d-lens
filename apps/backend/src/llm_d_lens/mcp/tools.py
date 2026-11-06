@@ -16,9 +16,6 @@ from llm_d_lens.auth.settings import get_settings
 from .catalog import catalog, render_path
 
 SPECIAL_ROUTES = {
-    "list_deploy_poc_configs": ("GET", "/api/deploy-poc/config"),
-    "start_deploy_poc": ("POST", "/api/deploy-poc/start"),
-    "teardown_deploy_poc": ("POST", "/api/deploy-poc/teardown"),
     "resolve_configurations": ("POST", "/api/configurations/resolve"),
     "render_configuration": ("POST", "/api/configurations/render"),
     "save_configuration": ("POST", "/api/configurations/save"),
@@ -34,8 +31,6 @@ SPECIAL_ROUTES = {
     "check_candidate_support": ("POST", "/api/candidate-support"),
     "search_candidates": ("POST", "/api/candidate-search"),
     "estimate_vllm_capacity": ("POST", "/api/v1/capacity/estimate"),
-    "get_deploy_status": ("GET", "/api/deploy-poc/status"),
-    "get_deploy_validation": ("GET", "/api/deploy-poc/validate"),
     "get_guide_catalog": ("GET", "/api/guide-planning/catalog"),
 }
 STATUS_KEYS = ("status", "phase", "state", "ready", "condition")
@@ -199,10 +194,8 @@ async def invoke_tool(request, name: str, arguments: dict):
     if name in SPECIAL_ROUTES:
         method, path = SPECIAL_ROUTES[name]
         if method == "GET":
-            result = await api_request(request, path + query_string(arguments))
-        else:
-            result = await api_request(request, path, method, arguments)
-        return {"namespace": arguments.get("namespace", ""), **result} if name == "get_deploy_validation" else result
+            return await api_request(request, path + query_string(arguments))
+        return await api_request(request, path, method, arguments)
     if name == "get_storage_volume_resource_status":
         return await api_request(
             request,

@@ -63,7 +63,9 @@ def _binding_json(record: Any) -> dict[str, Any]:
 
 def _role_json(role: RoleRecord) -> dict[str, Any]:
     service = default_service()
-    permissions = sorted(p.permission for p in service.role_permission_dao.list_for_role(role.id))
+    permissions = sorted(
+        p.permission for p in service.role_permission_dao.list_for_role(role.id) if p.permission in ALL_PERMISSIONS
+    )
     data = _jsonify(role)
     data["permissions"] = permissions
     return data
@@ -117,7 +119,7 @@ def _principal_view(principal: Principal) -> dict[str, Any]:
     return {
         "userId": principal.user_id,
         "username": principal.username,
-        "permissions": sorted(principal_permissions(principal)),
+        "permissions": sorted(code for code in principal_permissions(principal) if code in ALL_PERMISSIONS),
         "reachableClusters": None if clusters is None else sorted(clusters),
         "mustChangePassword": principal.must_change_password,
         "authzVersion": principal.authz_version,

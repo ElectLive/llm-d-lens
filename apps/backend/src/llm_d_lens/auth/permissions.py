@@ -179,9 +179,6 @@ _PERMISSIONS: tuple[Permission, ...] = (
     _permission("remote-deploy:target:connect", "Probe remote deploy targets"),
     _permission("remote-deploy:deploy:execute", "Run remote deployments"),
     _permission("remote-deploy:deploy:teardown", "Tear down remote deployments"),
-    _permission("deploy-poc:job:read", "View deploy PoC jobs", READ),
-    _permission("deploy-poc:job:execute", "Run deploy PoC jobs"),
-    _permission("deploy-poc:job:teardown", "Tear down deploy PoC jobs"),
     _permission("config:runtime:read", "Read runtime config", READ),
     _permission("mcp:tool:invoke", "Invoke MCP tools"),
 )

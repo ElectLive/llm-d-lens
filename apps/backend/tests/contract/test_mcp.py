@@ -134,7 +134,7 @@ def test_mcp_http_initialization_list_and_read_tool():
         listed = mcp_request(client, "tools/list")
         tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
         assert tools["start_remote_deploy"]["description"].startswith("[approve]")
-        called = mcp_request(client, "tools/call", {"name": "list_deploy_poc_configs", "arguments": {}})
+        called = mcp_request(client, "tools/call", {"name": "get_remote_deploy_defaults", "arguments": {}})
         assert not called["result"].get("isError")
         assert json.loads(called["result"]["content"][0]["text"])
         assert client.get("/api/mcp").status_code == 405
@@ -149,8 +149,10 @@ async def test_validation_errors_do_not_echo_argument_values():
     from llm_d_lens.mcp.tools import invoke_tool
 
     with pytest.raises(ValueError) as caught:
-        await invoke_tool(SimpleNamespace(app=app), "get_deploy_status", {"namespace": {"private": "sensitive-value"}})
-    assert "namespace" in str(caught.value)
+        await invoke_tool(
+            SimpleNamespace(app=app), "get_deployment_execution", {"execution_id": {"private": "sensitive-value"}}
+        )
+    assert "execution_id" in str(caught.value)
     assert "sensitive-value" not in str(caught.value)
 
 

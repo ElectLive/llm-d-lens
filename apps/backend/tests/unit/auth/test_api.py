@@ -63,12 +63,11 @@ def test_hidden_migrated_routes_participate_in_startup_validation(monkeypatch):
         "/api/mcp",
         "/api/playground",
         "/api/candidate-",
-        "/api/deploy-poc",
         "/api/remote-deploy",
         "/api/guide-planning",
     )
     expected = {(entry.method, entry.path) for entry in routes.ROUTE_PERMISSIONS if entry.path.startswith(prefixes)}
-    assert len(expected) == 26
+    assert len(expected) == 21
     assert expected <= routes.app_route_table(app)
     assert routes.validate_route_registry(app) == []
     monkeypatch.setattr(
@@ -119,12 +118,11 @@ def _migrated_routes():
         "/api/configurations/",
         "/api/candidate-search",
         "/api/candidate-support",
-        "/api/deploy-poc/",
         "/api/remote-deploy/",
         "/api/guide-planning/",
     )
     routes = [(entry.method, entry.path) for entry in ROUTE_PERMISSIONS if entry.path.startswith(prefixes)]
-    assert len(routes) >= 20
+    assert len(routes) >= 16
     return [*routes, ("POST", "/api/playground/chat"), ("POST", "/api/mcp")]
 
 
@@ -167,7 +165,7 @@ def test_mcp_entry_permission_does_not_grant_target_tool_permission(monkeypatch,
     with _client() as client:
         assert client.post("/api/mcp", json={}).status_code == 401
         assert rpc(client, "tools/list", {})["result"]["tools"]
-        result = rpc(client, "tools/call", {"name": "list_deploy_poc_configs", "arguments": {}})
+        result = rpc(client, "tools/call", {"name": "list_deployments", "arguments": {}})
         body = json.loads(result["result"]["content"][0]["text"])
         assert "status 403" in body["error"]
         assert body["detail"]["code"] == "forbidden"
@@ -213,7 +211,7 @@ def test_authenticated_playground_forwards_session_and_csrf_to_provider_and_tool
                                         {
                                             "id": "call-1",
                                             "type": "function",
-                                            "function": {"name": "list_deploy_poc_configs", "arguments": "{}"},
+                                            "function": {"name": "list_deployments", "arguments": "{}"},
                                         }
                                     ],
                                 }
@@ -262,7 +260,7 @@ def test_authenticated_playground_forwards_session_and_csrf_to_provider_and_tool
         assert not {"error", "permission_denied", "blocked"} & {event for event, _ in events}, events
         result = next(data for event, data in events if event == "tool_result")
         assert result["isError"] is False
-        assert json.loads(result["result"]["content"][0]["text"]) == client.get("/api/deploy-poc/config").json()
+        assert json.loads(result["result"]["content"][0]["text"]) == client.get("/api/v1/deployments").json()
         assert events[-2:] == [("message", {"content": "answer"}), ("done", {})]
         assert upstream.post.await_count == 2
         assert any(
@@ -297,10 +295,10 @@ def test_authenticated_mcp_browser_session_initializes_and_calls_read_tool():
         )
         assert initialized["serverInfo"]["name"] == "llm-d-prism"
         listed = rpc("tools/list", {})
-        assert "list_deploy_poc_configs" in {tool["name"] for tool in listed["tools"]}
-        called = rpc("tools/call", {"name": "list_deploy_poc_configs", "arguments": {}})
+        assert "list_deployments" in {tool["name"] for tool in listed["tools"]}
+        called = rpc("tools/call", {"name": "list_deployments", "arguments": {}})
         assert not called.get("isError"), called
-        assert json.loads(called["content"][0]["text"]) == client.get("/api/deploy-poc/config").json()
+        assert json.loads(called["content"][0]["text"]) == client.get("/api/v1/deployments").json()
 
 
 def test_migrated_business_routes_deny_unprivileged_users():
@@ -569,6 +567,64 @@ def test_record_list_endpoints_serialize():
         ):
             response = client.get(path)
             assert response.status_code == 200, (path, response.text)
+
+
+def test_role_permissions_omit_codes_no_longer_in_catalog():
+    from llm_d_lens.auth.permissions import ALL_PERMISSIONS
+    from llm_d_lens.auth.service import default_service
+
+    assert "removed:feature:read" not in ALL_PERMISSIONS
+    with _client() as client:
+        _bootstrap_and_login(client)
+        created = client.post(
+            "/api/v1/roles",
+            json={"name": "legacy-reader", "description": "", "permissions": ["deployment:run:read"]},
+            headers=_csrf_headers(client),
+        )
+        assert created.status_code == 201, created.text
+        role_id = created.json()["id"]
+        default_service().role_permission_dao.set_for_role(role_id, {"deployment:run:read", "removed:feature:read"})
+
+        fetched = client.get(f"/api/v1/roles/{role_id}")
+        assert fetched.status_code == 200, fetched.text
+        assert fetched.json()["permissions"] == ["deployment:run:read"]
+        listed = next(role for role in client.get("/api/v1/roles").json() if role["id"] == role_id)
+        assert listed["permissions"] == ["deployment:run:read"]
+
+        user = client.post(
+            "/api/v1/users",
+            json={"username": "legacy-reader-user", "password": STRONG},
+            headers=_csrf_headers(client),
+        )
+        assert user.status_code == 201, user.text
+        binding = client.post(
+            f"/api/v1/users/{user.json()['id']}/role-bindings",
+            json={"roleId": role_id, "scopeType": "global"},
+            headers=_csrf_headers(client),
+        )
+        assert binding.status_code == 201, binding.text
+        filtered = fetched.json()["permissions"]
+
+    with _client() as scoped:
+        login = scoped.post("/api/v1/auth/login", json={"username": "legacy-reader-user", "password": STRONG})
+        assert login.status_code == 200, login.text
+        assert login.json()["principal"]["permissions"] == ["deployment:run:read"]
+        session = scoped.get("/api/v1/auth/session")
+        assert session.status_code == 200, session.text
+        assert session.json()["permissions"] == ["deployment:run:read"]
+
+    with _client() as client:
+        login = client.post("/api/v1/auth/login", json={"username": "root", "password": STRONG})
+        assert login.status_code == 200, login.text
+        saved = client.put(
+            f"/api/v1/roles/{role_id}/permissions",
+            json={"permissions": filtered},
+            headers=_csrf_headers(client),
+        )
+        assert saved.status_code == 204, saved.text
+        assert {p.permission for p in default_service().role_permission_dao.list_for_role(role_id)} == {
+            "deployment:run:read"
+        }
 
 
 def test_groups_list_includes_role_bindings():

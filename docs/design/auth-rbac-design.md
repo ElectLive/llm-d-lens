@@ -913,9 +913,6 @@ The table below is the core of “refined permissions”. `R` = read-like, `W` =
 | `remote-deploy:target:connect` | fingerprint/test | `POST /api/remote-deploy/fingerprint`, `/test` |
 | `remote-deploy:deploy:execute` | start/status/logs | `POST /api/remote-deploy/start`, `/status`, `/logs` |
 | `remote-deploy:deploy:teardown` | teardown | `POST /api/remote-deploy/teardown` |
-| `deploy-poc:job:read` | Read configuration/status/validation | `GET /api/deploy-poc/config`, `/status`, `/validate` |
-| `deploy-poc:job:execute` | start | `POST /api/deploy-poc/start` |
-| `deploy-poc:job:teardown` | teardown | `POST /api/deploy-poc/teardown` |
 | `config:runtime:read` | Read frontend runtime config | `GET /api/config` (public, allowlisted fields only) |
 | `mcp:tool:invoke` | Invoke MCP directly | `POST /api/mcp` (guarded by both session + tool-level risk). **Implementation correction**: `/api/mcp` also accepts `playground:chat:use` (the Playground assistant loops back with the current user's signed internal identity); the actual action of each tool is still enforced by the target-route permissions, so this does not create privilege escalation |
 
@@ -1400,7 +1397,7 @@ app.use('/api/v1/auth', authProxyRouter);   // Cookie/Set-Cookie pass-through
 
 ### 9.4 Permissions for native Node routes
 
-The Node-side registry table covers: `/api/config`, `/api/deploy-poc/*`, `/api/remote-deploy/*`,
+The Node-side registry table covers: `/api/config`, `/api/remote-deploy/*`,
 `/api/guide-planning/*`, `/api/candidate-*`, `/api/configurations/*`,
 `/api/playground/chat`, `/api/mcp`. Only after validation does the Node native executor (SSH/kubectl)
 get invoked.
@@ -2037,6 +2034,8 @@ Connected through `llm_d_lens/auth/access.py` (`current_principal` / `visible_cl
 - **Centralized model registration**: `llm_d_lens/db/models/__init__.py` becomes the single model registration list,
   and `system_router._create_tables` / root `conftest.py` / `migrations/env.py` all switch to using it,
   fixing DB creation failures caused by missed registration of `clusters.owner_user_id -> users.id`.
+- **Legacy PoC deployment removed**: the hidden `/api/deploy-poc/*` routes and their
+  `deploy-poc:job:read` / `deploy-poc:job:execute` / `deploy-poc:job:teardown` permission codes were removed.
 
 ### 22.3.1 Remaining items (require user decisions or later tasks)
 

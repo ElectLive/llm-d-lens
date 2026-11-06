@@ -35,7 +35,6 @@ without reimplementing business logic.
 | Domain | Existing implementation | Key paths |
 | --- | --- | --- |
 | Cluster/capacity facts | `server/planningDiscovery.ts` (`inspectPlanningCluster`) | Read-only |
-| Deploy PoC (local/simple deployment) | `server/deploy.ts` | `/api/deploy-poc/{config,start,status,validate,teardown}` |
 | Remote deployment | `server/remoteDeploy.ts` | `/api/remote-deploy/{defaults,fingerprint,test,start,status,logs,teardown}` |
 | Candidate/benchmark retrieval | `server/candidateSearch.ts` | `/api/candidate-support`, `/api/candidate-search` |
 | Guide catalog/planning | `server/guidePlanning.ts` | `/api/guide-planning/{catalog,prepare,plan}` |
@@ -147,8 +146,8 @@ Classify tools by read/write semantics and risk. Phase 1 exposes read-only tools
 | `list_agentic_plans` | Current session plans and statuses | `GET /api/agentic-deployments` |
 | `get_agentic_plan` | Plan candidates, score source, and evidence | `GET /api/agentic-deployments/{id}` |
 | `get_simulation_result` | Completed Simulation result | `/api/simulation/tasks/{id}` |
-| `list_ready_deployments` | Current-session ready deployments exposing OpenAI-compatible gateways, aggregating PoC/remote/deployed Agentic runs | `/api/deploy-poc/status`, `/api/remote-deploy/status`, `GET /api/agentic-deployments` filtered by `status=deployed` |
-| `get_deployment_endpoint` | Resolve `gateway_endpoint` and served model ID for conversation | `gateway_endpoint` in `deploy-poc/validate` |
+| `list_ready_deployments` | Ready deployment executions visible to the caller; `gatewayEndpoint` comes from the execution `endpoint` or `forwarded_endpoint` and may be null | `GET /api/v1/deployments/executions?status=ready` with an optional `cluster_id` |
+| `get_deployment_endpoint` | Not implemented; the conversation endpoint and model are the `gatewayEndpoint` and `model` returned by `list_ready_deployments` | — |
 
 ### 4.1b Prometheus/monitoring data (read-only, Phase 1)
 
@@ -191,7 +190,7 @@ Guardrails:
 | Tool | Description | Existing capability | Guardrail |
 | --- | --- | --- | --- |
 | `approve_agentic_plan` | Approve and deploy | `POST .../approve` | Chat suspends the call and returns it to the UI; the user clicks Approve before execution. Existing server capacity/deployability revalidation remains |
-| `teardown_deployment` | Remove a deployment | `/api/deploy-poc/teardown`, `/api/remote-deploy/teardown` | UI confirmation and audit logging |
+| `teardown_deployment` | Not implemented | — | No generic teardown tool exists; `teardown_remote_deploy` covers only `/api/remote-deploy/teardown`, and UI confirmation plus audit logging remain requirements |
 
 > A model request alone never executes a cluster-changing tool. A human confirmation action is
 > required, matching the existing `awaiting_approval -> user approval` flow; the model merely
@@ -218,11 +217,12 @@ Guardrails:
   the same CSRF check as other authenticated browser mutations.
 - Add top-level Playground navigation with multiple use cases; "Talk with your Prism" comes first.
 - **Select a Deployment before conversation.** Populate a dropdown/card selector through
-  `list_ready_deployments`, showing current-session ready deployments with `gateway_endpoint`
-  from PoC known-good/smoke, Remote Deploy, or deployed Agentic runs. Show namespace, model,
-  accelerator, and source (PoC/Remote/Agentic).
-- After selection, Chat resolves endpoint/model through `get_deployment_endpoint`. The user's
-  own Prism-deployed model drives the conversation; no separate external LLM is configured.
+  `list_ready_deployments`, which lists deployment executions with `status=ready` from
+  `GET /api/v1/deployments/executions` and exposes their `gatewayEndpoint` (the execution
+  `endpoint` or `forwarded_endpoint`). Show namespace, model, cluster, and readiness.
+- After selection, Chat uses the `gatewayEndpoint` and `model` returned by
+  `list_ready_deployments`. The user's own Prism-deployed model drives the conversation; no
+  separate external LLM is configured.
 - If no ready Deployment exists, direct the user to Model Market/Deploy. There is no hidden
   fallback to an external LLM. Warn about or filter models without tool support (§8).
 - Layout: chat/Markdown on the left, a **tool timeline** on the right. Reuse existing components
@@ -258,8 +258,8 @@ The following was implemented and locally verified: MCP handshake/list_tools/cal
 end-to-end Playground SSE, `npm run build`, and existing `server/*.test.ts` tests passed.
 
 - `server/mcp/internal.ts`: internal fetch wrapper for tools calling Prism's REST APIs.
-- `server/mcp/tools.ts`: read-only catalog containing `get_deploy_status`, `get_deploy_validation`,
-  `list_ready_deployments`, `list_agentic_plans`, `get_agentic_plan`, `get_guide_catalog`,
+- `server/mcp/tools.ts`: read-only catalog containing `list_ready_deployments`,
+  `list_agentic_plans`, `get_agentic_plan`, `get_guide_catalog`,
   `get_cluster_stack_status`, and `get_flow_map_metrics`.
 - `server/mcp/server.ts` + `server/mcp/router.ts`: stateless Streamable HTTP server at
   `POST /api/mcp`, also directly usable by external MCP clients as required in §3.
@@ -274,13 +274,13 @@ end-to-end Playground SSE, `npm run build`, and existing `server/*.test.ts` test
 
 **Known limitations:**
 
-1. `list_ready_deployments` probes only PoC namespaces `prism-deploy-poc` and `prism-smoke-test`.
-   Remote and Agentic outputs lack stable run-to-namespace/endpoint associations and need a
-   separate small task.
-2. Cluster selection currently enforces frontend ordering only: select/open/reuse its session
-   before choosing a Deployment. `GET /api/deploy-poc/status` and `/api/deploy-poc/validate`
-   do not yet filter by `clusterSessionId` (POST start/teardown do). The list is therefore **not
-   truly filtered by cluster**; real filtering awaits multi-cluster PoC queries.
+1. `list_ready_deployments` queries `GET /api/v1/deployments/executions?status=ready` with an
+   optional `clusterId`; it does not consult legacy PoC namespaces or Model Service publication
+   state.
+2. Cluster selection is enforced only through the optional `clusterId` argument, which becomes the
+   `cluster_id` query parameter on `GET /api/v1/deployments/executions`. Without it, the tool
+   returns every execution visible to the caller; the route itself also limits results to clusters
+   the caller can access.
 3. `search_benchmark_candidates` remains **unimplemented**. Its complex
    `workload`/`searchConfig`/`manualConfig`/`sourceIds` body needs a correct schema, not a rushed wrapper.
 4. Phase 2/3 write/approval tools remain unimplemented. Chat's risk gate is ready: new tools not

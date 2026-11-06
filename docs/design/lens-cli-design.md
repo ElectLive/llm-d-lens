@@ -507,7 +507,7 @@ class ObjectEntry:
     api_version: str  # JSON: apiVersion
     kind: str
     name: str
-    resource: str     # plural.group
+    resource: str  # plural.group
     uid: str = ""
 
 
@@ -529,7 +529,9 @@ class InstanceRecord:
     rollout: RolloutRecord | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> InstanceRecord: ...  # raises ConflictError
+    def from_dict(
+        cls, data: dict[str, Any]
+    ) -> InstanceRecord: ...  # raises ConflictError
 
     def to_dict(self) -> dict[str, Any]: ...  # camelCase keys, as stored today
 ```

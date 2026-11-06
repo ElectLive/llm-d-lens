@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import paramiko
@@ -19,8 +20,6 @@ from fastapi.responses import JSONResponse
 from llm_d_lens.hardware.registry import all_profiles
 from llm_d_lens.hardware.resolver import resolve_by_resource
 from llm_d_lens.infrastructure.ssh import SshTarget, inspect_host_key, remote_exec
-
-from .legacy_poc import timestamp
 
 router = APIRouter(prefix="/api/remote-deploy", include_in_schema=False)
 logger = logging.getLogger(__name__)
@@ -33,6 +32,10 @@ TERMINAL_REASONS = {
     "CreateContainerConfigError",
     "RunContainerError",
 }
+
+
+def timestamp() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class RemoteError(Exception):

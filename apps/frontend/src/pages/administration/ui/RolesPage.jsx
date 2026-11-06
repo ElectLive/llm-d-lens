@@ -176,7 +176,7 @@ const DOMAIN_LABELS = {
     evaluate: 'Evaluation', configuration: 'Configuration', candidate: 'Candidates',
     guide: 'Guide planning', simulation: 'Simulation', 'ai-provider': 'External providers',
     monitoring: 'Observability', playground: 'Assistant', 'remote-deploy': 'Remote deploy',
-    'deploy-poc': 'Deploy PoC', config: 'Runtime config', mcp: 'MCP',
+    config: 'Runtime config', mcp: 'MCP',
 };
 
 function groupByDomain(catalog) {

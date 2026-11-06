@@ -1,72 +1,6 @@
 {
   "specialTools": [
     {
-      "name": "list_deploy_poc_configs",
-      "description": "List the built-in Lens Deploy PoC configuration presets. Use this to discover the supported local smoke or known-good deploy modes before starting a PoC deployment.",
-      "riskTier": "read",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      }
-    },
-    {
-      "name": "start_deploy_poc",
-      "description": "Start a local Lens Deploy PoC deployment. Use config=smoke-pause for a tiny smoke deployment or the known-good preset for the legacy llm-d guide path.",
-      "riskTier": "approve",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "config": {
-            "description": "PoC configuration id to start. Omit to use the known-good preset.",
-            "type": "string",
-            "minLength": 1
-          },
-          "namespace": {
-            "description": "Kubernetes namespace to deploy into. Defaults to the preset's namespace.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 63
-          },
-          "clusterSessionId": {
-            "description": "Optional active Lens cluster session id whose kubeconfig should be used.",
-            "type": "string",
-            "minLength": 36,
-            "maxLength": 36
-          }
-        }
-      }
-    },
-    {
-      "name": "teardown_deploy_poc",
-      "description": "Tear down a local Lens Deploy PoC deployment and optionally delete its namespace. Use this for cleanup of legacy PoC runs.",
-      "riskTier": "approve",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "config": {
-            "description": "PoC configuration id that was originally started. Omit to use the known-good preset.",
-            "type": "string",
-            "minLength": 1
-          },
-          "namespace": {
-            "description": "Kubernetes namespace to delete or destroy.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 63
-          },
-          "clusterSessionId": {
-            "description": "Optional active Lens cluster session id whose kubeconfig should be used.",
-            "type": "string",
-            "minLength": 36,
-            "maxLength": 36
-          }
-        }
-      }
-    },
-    {
       "name": "resolve_configurations",
       "description": "Resolve one or more candidate configurations into Lens candidate config objects and validations. This uses the local Lens proxy route that the frontend calls.",
       "riskTier": "write",
@@ -1777,40 +1711,6 @@
       }
     },
     {
-      "name": "get_deploy_status",
-      "description": "Get the live job + Kubernetes status of a Lens Deploy PoC deployment by namespace (merges the local deploy job phase with real pod status from the OptimalBench service).",
-      "riskTier": "read",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "namespace": {
-            "description": "Kubernetes namespace of the deployment. Defaults to the known-good PoC namespace.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 63
-          }
-        }
-      }
-    },
-    {
-      "name": "get_deploy_validation",
-      "description": "Check whether a Lens Deploy PoC deployment is fully ready (all pods Ready, gateway endpoint present) and return its OpenAI-compatible gateway endpoint if so.",
-      "riskTier": "read",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "namespace": {
-            "description": "Kubernetes namespace of the deployment. Defaults to the known-good PoC namespace.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 63
-          }
-        }
-      }
-    },
-    {
       "name": "list_ready_deployments",
       "description": "List real Lens deployments (created via Model Market / Deploy) that are Ready. This only confirms deployment readiness: it does not mean the deployment was published as a Model Service through the Gateway. For Model Service publication, use list_publishable_deployments and then publish_model_service or create_model_service_member. Use this tool to discover a target for a Playground conversation.",
       "riskTier": "read",
@@ -1852,7 +1752,7 @@
     },
     {
       "name": "wait_for_status",
-      "description": "Repeatedly poll another READ-tier status-check tool (e.g. get_cluster_bootstrap_status, get_remote_deploy_status, get_deployment_execution, get_accelerator_monitoring_operation, get_cluster_stack_operation, get_deploy_status, get_deploy_validation, get_model_cache_entry, get_evaluate_run, get_simulation_task, get_evaluation_workflow) SERVER-SIDE until it reaches a terminal state (ready/succeeded/failed/error/...) or a timeout elapses, instead of you calling that tool yourself over and over across many separate turns. Always prefer this over manually re-invoking a status tool in a loop while waiting for a deploy, install, bootstrap, evaluation, or similar long-running operation to finish. If it times out before reaching a terminal state, call wait_for_status again with the same arguments to keep waiting from where it left off. If the polled resource looks \"pending\"/\"queued\"/\"unschedulable\" (e.g. a Kubernetes pod phase of \"Pending\"), this tool returns immediately (pending: true) instead of consuming the whole timeout -- this usually means the cluster does not yet have free resources to schedule the workload, so tell the user it looks resource-constrained and the request is queued right away rather than waiting for it to finish; only call wait_for_status again if they want you to keep monitoring.",
+      "description": "Repeatedly poll another READ-tier status-check tool (e.g. get_cluster_bootstrap_status, get_remote_deploy_status, get_deployment_execution, get_accelerator_monitoring_operation, get_cluster_stack_operation, get_model_cache_entry, get_evaluate_run, get_simulation_task, get_evaluation_workflow) SERVER-SIDE until it reaches a terminal state (ready/succeeded/failed/error/...) or a timeout elapses, instead of you calling that tool yourself over and over across many separate turns. Always prefer this over manually re-invoking a status tool in a loop while waiting for a deploy, install, bootstrap, evaluation, or similar long-running operation to finish. If it times out before reaching a terminal state, call wait_for_status again with the same arguments to keep waiting from where it left off. If the polled resource looks \"pending\"/\"queued\"/\"unschedulable\" (e.g. a Kubernetes pod phase of \"Pending\"), this tool returns immediately (pending: true) instead of consuming the whole timeout -- this usually means the cluster does not yet have free resources to schedule the workload, so tell the user it looks resource-constrained and the request is queued right away rather than waiting for it to finish; only call wait_for_status again if they want you to keep monitoring.",
       "riskTier": "read",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

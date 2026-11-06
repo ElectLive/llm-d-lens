@@ -45,7 +45,6 @@ from llm_d_lens.dashboard.collector import reset_collector
 from llm_d_lens.dashboard.router import router as dashboard_router
 from llm_d_lens.db.system_router import router as system_database_router
 from llm_d_lens.deploy.guide_planning import router as guide_planning_router
-from llm_d_lens.deploy.legacy_poc import router as legacy_poc_router
 from llm_d_lens.deploy.remote_deploy import router as remote_deploy_router
 from llm_d_lens.deploy.router import router as deploy_router
 from llm_d_lens.evaluation import router as evaluate_router
@@ -333,7 +332,6 @@ app.include_router(legacy_router)
 app.include_router(configuration_router)
 app.include_router(legacy_configuration_router)
 app.include_router(deploy_router)
-app.include_router(legacy_poc_router)
 app.include_router(guide_planning_router)
 app.include_router(mcp_router)
 app.include_router(playground_router)

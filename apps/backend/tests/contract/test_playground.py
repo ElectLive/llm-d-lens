@@ -18,7 +18,7 @@ async def test_approval_pauses_before_any_effect(monkeypatch):
     invoke = AsyncMock()
     emit = AsyncMock()
     monkeypatch.setattr(chat, "call_tool_safely", invoke)
-    call = tool_call("start_deploy_poc")
+    call = tool_call("start_remote_deploy")
     conversation = [{"role": "assistant", "tool_calls": [call]}]
     outcome = await chat.process_pending_tool_calls([call], conversation, SimpleNamespace(app=app), emit)
     assert outcome == "paused"
@@ -34,7 +34,7 @@ async def test_voice_turn_blocks_approval_without_confirmation(monkeypatch):
     monkeypatch.setattr(chat, "call_tool_safely", invoke)
     conversation = []
     result = await chat.process_pending_tool_calls(
-        [tool_call("start_deploy_poc")], conversation, SimpleNamespace(app=app), emit, read_only=True
+        [tool_call("start_remote_deploy")], conversation, SimpleNamespace(app=app), emit, read_only=True
     )
     assert result == "continue"
     assert emit.call_args.args[0] == "blocked"
@@ -49,7 +49,7 @@ async def test_authorization_failure_stops_siblings(monkeypatch):
     monkeypatch.setattr(chat, "call_tool_safely", invoke)
     conversation = []
     outcome = await chat.process_pending_tool_calls(
-        [tool_call("list_deploy_poc_configs"), tool_call("get_deploy_status", "call-2")],
+        [tool_call("list_deployments"), tool_call("list_ready_deployments", "call-2")],
         conversation,
         SimpleNamespace(app=app),
         AsyncMock(),
@@ -135,7 +135,7 @@ def test_chat_sse_finishes_with_message_and_done(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_resuming_approval_resolves_siblings_before_model_call(monkeypatch):
-    calls = [tool_call("start_deploy_poc"), tool_call("teardown_deploy_poc", "call-2")]
+    calls = [tool_call("start_remote_deploy"), tool_call("teardown_remote_deploy", "call-2")]
     conversation = [{"role": "assistant", "tool_calls": calls}]
     invoke = AsyncMock(return_value=({"content": [{"type": "text", "text": "{}"}]}, False))
     monkeypatch.setattr(chat, "call_tool_safely", invoke)
@@ -152,7 +152,7 @@ async def test_resuming_approval_resolves_siblings_before_model_call(monkeypatch
 async def test_voice_resume_cannot_execute_approval(monkeypatch):
     invoke = AsyncMock()
     monkeypatch.setattr(chat, "call_tool_safely", invoke)
-    conversation = [{"role": "assistant", "tool_calls": [tool_call("start_deploy_poc")]}]
+    conversation = [{"role": "assistant", "tool_calls": [tool_call("start_remote_deploy")]}]
     outcome = await chat.resume_pending(
         SimpleNamespace(app=app), {"toolCallId": "call-1", "decision": "approve"}, conversation, AsyncMock(), True
     )
