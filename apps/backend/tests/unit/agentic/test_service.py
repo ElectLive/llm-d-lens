@@ -230,7 +230,7 @@ def test_create_preserves_full_prompt_in_append_only_planning_snapshot(monkeypat
 
 
 @pytest.mark.parametrize("fallback", [False, True])
-def test_public_rag_is_queried_before_generation_and_requeried_on_refinement(monkeypatch, tmp_path, fallback):
+def test_public_rag_is_queried_before_generation_and_queried_again_on_refinement(monkeypatch, tmp_path, fallback):
     from llm_d_lens.agentic.generator import CandidateGenerationResult
     from llm_d_lens.agentic.planner import PlannerDecision
     from llm_d_lens.auth.contracts import Principal, RoleBinding
